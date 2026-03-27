@@ -60,11 +60,11 @@ def pre_check() -> bool:
         logging.error(f"Failed to create directory {download_directory_path} due to permission error: {e}")
         return False
     
-    # Use the direct download URL from Hugging Face
+    # Use the direct download URL from Hugging Face (FP32 model for broad GPU compatibility)
     conditional_download(
         download_directory_path,
         [
-            "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128_fp16.onnx"
+            "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128.onnx"
         ],
     )
     return True
@@ -72,7 +72,7 @@ def pre_check() -> bool:
 
 def pre_start() -> bool:
     # Simplified pre_start, assuming checks happen before calling process functions
-    model_path = os.path.join(models_dir, "inswapper_128_fp16.onnx")
+    model_path = os.path.join(models_dir, "inswapper_128.onnx")
     if not os.path.exists(model_path):
         update_status(f"Model not found: {model_path}. Please download it.", NAME)
         return False
@@ -92,7 +92,9 @@ def get_face_swapper() -> Any:
     if FACE_SWAPPER is None:
         with THREAD_LOCK:
             if FACE_SWAPPER is None:
-                model_name = "inswapper_128_fp16.onnx"
+                # Use FP32 model by default for broad GPU compatibility.
+                # FP16 can produce NaN on GPUs without Tensor Cores (e.g. GTX 16xx, V100).
+                model_name = "inswapper_128.onnx"
                 model_path = os.path.join(models_dir, model_name)
                 update_status(f"Loading face swapper model from: {model_path}", NAME)
                 try:
@@ -109,33 +111,8 @@ def get_face_swapper() -> Any:
                                     "SpecializationStrategy": "FastPrediction",
                                     "AllowLowPrecisionAccumulationOnGPU": 1,
                                     "EnableOnSubgraphs": 1,
-                                    "RequireStaticShapes": 1,
+                                    "RequireStaticShapes": 0,
                                     "MaximumCacheSize": 1024 * 1024 * 512,  # 512MB cache
-                                }
-                            ))
-                        else:
-                            providers_config.append(p)
-
-                    FACE_SWAPPER = insightface.model_zoo.get_model(
-                        model_path,
-                        providers=providers_config,
-                    )
-                    update_status("Face swapper model loaded successfully.", NAME)
-                    # Warmup inference: trigger CoreML JIT compilation and compute plan
-                    # caching so the first real inference call has no latency spike.
-                    if any(
-                        (p[0] if isinstance(p, tuple) else p) == "CoreMLExecutionProvider"
-                        for p in providers_config
-                    ):
-                        try:
-                            session = FACE_SWAPPER.session
-                            input_feed = {
-                                inp.name: np.zeros(
-                                    [d if isinstance(d, int) and d > 0 else 1
-                                     for d in inp.shape],
-                                    dtype=np.float32,
-                                )
-                                for inp in session.get_inputs()
                             }
                             session.run(None, input_feed)
                             update_status("CoreML warmup inference complete.", NAME)
