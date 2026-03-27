@@ -32,6 +32,7 @@ from modules.utilities import (
     has_image_extension,
 )
 from modules.video_capture import VideoCapturer
+from modules import virtual_camera
 from modules.gettext import LanguageManager
 from modules.ui_tooltip import ToolTip
 from modules import globals
@@ -1221,6 +1222,10 @@ def _processing_thread_func(capture_queue, processed_queue, stop_event,
                 2,
             )
 
+        # Send to virtual camera if active
+        if modules.globals.virtual_camera:
+            virtual_camera.send(temp_frame)
+
         # Put processed frame into output queue, dropping old frames if full
         try:
             processed_queue.put_nowait(temp_frame)
@@ -1245,6 +1250,10 @@ def create_webcam_preview(camera_index: int):
 
     preview_label.configure(width=PREVIEW_DEFAULT_WIDTH, height=PREVIEW_DEFAULT_HEIGHT)
     PREVIEW.deiconify()
+
+    # Start virtual camera output if enabled
+    if modules.globals.virtual_camera:
+        virtual_camera.start(width=PREVIEW_DEFAULT_WIDTH, height=PREVIEW_DEFAULT_HEIGHT, fps=30)
 
     # Queues for decoupling capture from processing and processing from display.
     # Small maxsize ensures we always work on recent frames and drop stale ones.
@@ -1293,6 +1302,7 @@ def create_webcam_preview(camera_index: int):
         det_thread.join(timeout=2.0)
         proc_thread.join(timeout=2.0)
         cap.release()
+        virtual_camera.stop()
         PREVIEW.withdraw()
 
     # Non-blocking display loop using ROOT.after() — avoids blocking the
