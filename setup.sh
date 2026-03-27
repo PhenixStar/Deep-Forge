@@ -15,8 +15,10 @@ source .venv/bin/activate
 pip install --upgrade pip setuptools wheel
 pip install Cython numpy==1.26.4
 pip install nvidia-cudnn-cu12==9.1.0.70 nvidia-cublas-cu12
-grep -v pygrabber requirements.txt > /tmp/req-linux.txt
-pip install -r /tmp/req-linux.txt
+REQ_TMP=$(mktemp /tmp/req-linux.XXXXXX)
+grep -v pygrabber requirements.txt > "$REQ_TMP"
+pip install -r "$REQ_TMP"
+rm -f "$REQ_TMP"
 pip install -U torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 pip install huggingface-hub
 
@@ -25,10 +27,11 @@ CUDNN_PATH=$(python -c "import nvidia.cudnn; print(nvidia.cudnn.__path__[0])")
 grep -q "LD_LIBRARY_PATH.*cudnn" .venv/bin/activate || \
   echo "export LD_LIBRARY_PATH=${CUDNN_PATH}/lib:\$LD_LIBRARY_PATH" >> .venv/bin/activate
 
-# Download models
-mkdir -p models
+# Download models (respect DEEP_LIVE_CAM_MODELS_DIR if set)
+MODELS_DIR="${DEEP_LIVE_CAM_MODELS_DIR:-$(pwd)/models}"
+mkdir -p "$MODELS_DIR"
 huggingface-cli download hacksider/deep-live-cam \
-  --local-dir models --local-dir-use-symlinks False
-[ -L models/inswapper_128.onnx ] || ln -sf inswapper_128_fp16.onnx models/inswapper_128.onnx
+  --local-dir "$MODELS_DIR" --local-dir-use-symlinks False
+[ -L "$MODELS_DIR/inswapper_128.onnx" ] || ln -sf inswapper_128_fp16.onnx "$MODELS_DIR/inswapper_128.onnx"
 
 echo "Setup complete. Run: ./start.sh"
