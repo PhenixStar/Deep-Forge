@@ -30,10 +30,7 @@ MODEL_FILE = "GPEN-BFR-512.onnx"
 ENHANCER = None
 THREAD_LOCK = threading.Lock()
 
-abs_dir = os.path.dirname(os.path.abspath(__file__))
-models_dir = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(abs_dir))), "models"
-)
+from modules.paths import MODELS_DIR as models_dir
 
 
 def pre_check() -> bool:

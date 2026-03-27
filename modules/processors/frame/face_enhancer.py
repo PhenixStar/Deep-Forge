@@ -24,10 +24,7 @@ THREAD_SEMAPHORE = threading.Semaphore()
 THREAD_LOCK = threading.Lock()
 NAME = "DLC.FACE-ENHANCER"
 
-abs_dir = os.path.dirname(os.path.abspath(__file__))
-models_dir = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(abs_dir))), "models"
-)
+from modules.paths import MODELS_DIR as models_dir
 
 # Standard FFHQ 5-point face template for 512x512 resolution
 # Points: left_eye, right_eye, nose, left_mouth, right_mouth

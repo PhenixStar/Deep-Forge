@@ -38,10 +38,7 @@ FRAME_SKIP_COUNTER = 0
 ADAPTIVE_QUALITY = True
 # --- END: Mac M1-M5 Optimizations ---
 
-abs_dir = os.path.dirname(os.path.abspath(__file__))
-models_dir = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(abs_dir))), "models"
-)
+from modules.paths import MODELS_DIR as models_dir
 
 def pre_check() -> bool:
     # Use models_dir instead of abs_dir to save to the correct location
