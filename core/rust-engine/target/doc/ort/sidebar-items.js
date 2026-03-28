@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"constant":["MINOR_VERSION"],"fn":["api","info","set_api"],"macro":["inputs","log","ortsys"],"mod":["compiler","device","editor","environment","ep","error","logging","memory","operator","session","util","value"],"trait":["AsPointer"]};

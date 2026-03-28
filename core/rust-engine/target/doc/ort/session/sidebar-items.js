@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["SessionInputValue","SessionInputs","WorkloadType"],"mod":["builder"],"struct":["Adapter","HasSelectedOutputs","InMemorySession","InferenceFut","IoBinding","ModelMetadata","NoSelectedOutputs","OutputSelector","OverridableInitializer","RunOptions","Session","SessionOutputs","SharedSessionInner"],"trait":["SelectedOutputMarker"]};

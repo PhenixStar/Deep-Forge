@@ -17,6 +17,9 @@ app/src-tauri/binaries/deep-live-cam-server-*
 # Sidecar launcher build artifacts
 app/src-tauri/sidecar-launcher/target/
 
+# Rust engine build artifacts
+core/rust-engine/target/
+
 # Models (downloaded at runtime)
 core/models/*.onnx
 

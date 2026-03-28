@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["compile_api"],"struct":["CompiledModel","ModelCompiler"]};

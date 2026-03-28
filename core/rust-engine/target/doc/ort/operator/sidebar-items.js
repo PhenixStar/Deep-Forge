@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["InputOutputCharacteristic"],"struct":["Attribute","KernelAttributes","KernelContext","OperatorDomain","OperatorInput","OperatorOutput","ScratchBuffer","ShapeInferenceContext"],"trait":["FromKernelAttributes","FromOpAttr","Kernel","Operator","ToAttribute"]};
