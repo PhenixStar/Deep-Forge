@@ -41,11 +41,16 @@ _camera_lock = threading.Lock()
 
 
 def _init_providers():
-    """Initialize ONNX execution providers."""
+    """Initialize ONNX execution providers.
+
+    Priority: CUDA (NVIDIA) > DirectML (AMD/Intel/NVIDIA on Windows) > CPU
+    """
     import onnxruntime as ort
-    providers = ort.get_available_providers()
-    if "CUDAExecutionProvider" in providers:
+    available = ort.get_available_providers()
+    if "CUDAExecutionProvider" in available:
         globals.execution_providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    elif "DmlExecutionProvider" in available:
+        globals.execution_providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
     else:
         globals.execution_providers = ["CPUExecutionProvider"]
     globals.frame_processors = ["face_swapper"]

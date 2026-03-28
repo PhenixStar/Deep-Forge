@@ -34,7 +34,7 @@ Write-Host "[BUILD] Creating virtual environment..."
 Write-Host "[BUILD] Installing Python dependencies..."
 & "$SidecarDir\venv\Scripts\pip.exe" install --no-cache-dir `
   numpy "opencv-python==4.10.0.84" "insightface==0.7.3" `
-  "onnxruntime-gpu==1.24.2" `
+  onnxruntime-directml `
   fastapi "uvicorn[standard]" python-multipart `
   "psutil==5.9.8" "protobuf==4.25.1"
 
