@@ -12,7 +12,15 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image.workspace = true
+ndarray.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 tower-http = { version = "0.6", features = ["cors"] }
+
+[dev-dependencies]
+# Integration tests drive the router in-process via tower::ServiceExt.
+# All three crates are already pulled in transitively; pinning here ensures
+# `cargo test` resolves them correctly without a network fetch.
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
