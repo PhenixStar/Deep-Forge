@@ -23,6 +23,7 @@ import modules.globals as globals
 from modules.face_analyser import get_one_face
 from modules.processors.frame.core import get_frame_processors_modules
 from modules.camera_utils import get_available_cameras
+from modules.paths import MODELS_DIR
 
 app = FastAPI(title="Deep-Live-Cam Server", version="0.1.0")
 app.add_middleware(
@@ -53,7 +54,9 @@ def _init_providers():
 @app.on_event("startup")
 async def startup():
     _init_providers()
+    os.makedirs(MODELS_DIR, exist_ok=True)
     print(f"[SERVER] Providers: {globals.execution_providers}")
+    print(f"[SERVER] Models dir: {MODELS_DIR}")
 
 
 @app.get("/health")

@@ -1,0 +1,8 @@
+[package]
+name = "deep-live-cam-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "deep-live-cam-server"
+path = "src/main.rs"
