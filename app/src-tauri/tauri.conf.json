@@ -41,13 +41,7 @@
   },
   "plugins": {
     "shell": {
-      "sidecar": true,
-      "scope": [
-        {
-          "name": "binaries/deep-live-cam-server",
-          "sidecar": true
-        }
-      ]
+      "open": true
     },
     "updater": {
       "endpoints": [

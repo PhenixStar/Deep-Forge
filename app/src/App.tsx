@@ -55,29 +55,29 @@ export default function App() {
 
     ws.onopen = () => setStatus("connected");
 
-    ws.onmessage = (event) => {
+    ws.onmessage = async (event) => {
       setStatus("processing");
       const blob = new Blob([event.data], { type: "image/jpeg" });
-      const url = URL.createObjectURL(blob);
-      const img = new Image();
-      img.onload = () => {
+      try {
+        const bitmap = await createImageBitmap(blob);
         const canvas = canvasRef.current;
         if (canvas) {
-          canvas.width = img.width;
-          canvas.height = img.height;
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
           const ctx = canvas.getContext("2d");
-          ctx?.drawImage(img, 0, 0);
+          ctx?.drawImage(bitmap, 0, 0);
         }
-        URL.revokeObjectURL(url);
-        frameCount++;
-        const now = performance.now();
-        if (now - lastTime >= 1000) {
-          setFps(Math.round(frameCount / ((now - lastTime) / 1000)));
-          frameCount = 0;
-          lastTime = now;
-        }
-      };
-      img.src = url;
+        bitmap.close();
+      } catch {
+        // Corrupt frame — skip silently
+      }
+      frameCount++;
+      const now = performance.now();
+      if (now - lastTime >= 1000) {
+        setFps(Math.round(frameCount / ((now - lastTime) / 1000)));
+        frameCount = 0;
+        lastTime = now;
+      }
     };
 
     ws.onerror = () => setError("Connection failed — is the backend running?");

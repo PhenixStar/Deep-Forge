@@ -35,7 +35,10 @@ async fn main() {
 
     let server_state = ServerState {
         app:    Arc::new(RwLock::new(app_state)),
-        models: Arc::new(Mutex::new(Models { detector, swapper })),
+        models: Arc::new(Models {
+            detector: Arc::new(Mutex::new(detector)),
+            swapper:  Arc::new(Mutex::new(swapper)),
+        }),
     };
 
     let app = build_router(server_state);

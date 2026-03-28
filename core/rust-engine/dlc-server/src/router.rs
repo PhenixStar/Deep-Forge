@@ -24,8 +24,8 @@ use dlc_core::{detect::FaceDetector, swap::FaceSwapper, Frame};
 // ---------------------------------------------------------------------------
 
 pub struct Models {
-    pub detector: Option<FaceDetector>,
-    pub swapper:  Option<FaceSwapper>,
+    pub detector: Arc<Mutex<Option<FaceDetector>>>,
+    pub swapper:  Arc<Mutex<Option<FaceSwapper>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ pub struct Models {
 #[derive(Clone)]
 pub struct ServerState {
     pub app:    Arc<RwLock<AppState>>,
-    pub models: Arc<Mutex<Models>>,
+    pub models: Arc<Models>,
 }
 
 impl axum::extract::FromRef<ServerState> for Arc<RwLock<AppState>> {
@@ -53,9 +53,12 @@ impl axum::extract::FromRef<ServerState> for Arc<RwLock<AppState>> {
 /// Tests construct `ServerState` directly with `models: None` to avoid
 /// loading ONNX files from disk.
 pub fn build_router(server_state: ServerState) -> Router {
+    // Tauri v2 uses http://tauri.localhost on Windows, tauri://localhost on macOS/Linux
     let cors = CorsLayer::new()
         .allow_origin([
             "tauri://localhost".parse().unwrap(),
+            "http://tauri.localhost".parse().unwrap(),
+            "https://tauri.localhost".parse().unwrap(),
             "http://localhost:1420".parse().unwrap(),
             "http://localhost:8008".parse().unwrap(),
         ])
@@ -70,6 +73,7 @@ pub fn build_router(server_state: ServerState) -> Router {
         .route("/camera/{index}", post(set_camera))
         .route("/settings",       get(get_settings).post(update_settings))
         .route("/ws/video",       get(ws_video))
+        .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(cors)
         .with_state(server_state)
 }
@@ -78,7 +82,10 @@ pub fn build_router(server_state: ServerState) -> Router {
 pub fn test_state() -> ServerState {
     ServerState {
         app:    Arc::new(RwLock::new(AppState::default())),
-        models: Arc::new(Mutex::new(Models { detector: None, swapper: None })),
+        models: Arc::new(Models {
+            detector: Arc::new(Mutex::new(None)),
+            swapper:  Arc::new(Mutex::new(None)),
+        }),
     }
 }
 
@@ -270,64 +277,68 @@ async fn swap_image(
         }
     };
 
-    let mut models = server_state.models.lock().await;
+    // Lock detector, run detection, then drop the guard before acquiring swapper.
+    let (source_face, target_face) = {
+        let mut det_guard = server_state.models.detector.lock().await;
+        let detector = match det_guard.as_mut() {
+            Some(d) => d,
+            None => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({
+                        "error": "models not loaded",
+                        "detail": "FaceDetector ONNX model unavailable — check models_dir"
+                    })),
+                )
+                    .into_response();
+            }
+        };
 
-    let detector = match models.detector.as_mut() {
-        Some(d) => d,
-        None => {
+        let source_faces = match detector.detect(&source_frame, 0.5) {
+            Ok(f)  => f,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("source detection failed: {e}")})),
+                )
+                    .into_response();
+            }
+        };
+
+        if source_faces.is_empty() {
             return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({
-                    "error": "models not loaded",
-                    "detail": "FaceDetector ONNX model unavailable — check models_dir"
-                })),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"error": "no face detected in source image"})),
             )
                 .into_response();
         }
-    };
 
-    let source_faces = match detector.detect(&source_frame, 0.5) {
-        Ok(f)  => f,
-        Err(e) => {
+        let target_faces = match detector.detect(&target_frame, 0.5) {
+            Ok(f)  => f,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("target detection failed: {e}")})),
+                )
+                    .into_response();
+            }
+        };
+
+        if target_faces.is_empty() {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("source detection failed: {e}")})),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({"error": "no face detected in target image"})),
             )
                 .into_response();
         }
-    };
 
-    if source_faces.is_empty() {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": "no face detected in source image"})),
-        )
-            .into_response();
-    }
+        let sf = source_faces.into_iter().next().unwrap();
+        let tf = target_faces.into_iter().next().unwrap();
+        (sf, tf)
+    }; // detector guard dropped here
 
-    let target_faces = match detector.detect(&target_frame, 0.5) {
-        Ok(f)  => f,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": format!("target detection failed: {e}")})),
-            )
-                .into_response();
-        }
-    };
-
-    if target_faces.is_empty() {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": "no face detected in target image"})),
-        )
-            .into_response();
-    }
-
-    let source_face = source_faces.into_iter().next().unwrap();
-    let target_face = target_faces.into_iter().next().unwrap();
-
-    let swapper = match models.swapper.as_mut() {
+    let mut swap_guard = server_state.models.swapper.lock().await;
+    let swapper = match swap_guard.as_mut() {
         Some(s) => s,
         None => {
             return (
@@ -445,12 +456,12 @@ async fn update_settings(
 
 async fn ws_video(
     ws: WebSocketUpgrade,
-    State(state): State<Arc<RwLock<AppState>>>,
+    State(server_state): State<ServerState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_video_ws(socket, state))
+    ws.on_upgrade(move |socket| handle_video_ws(socket, server_state))
 }
 
-/// Pre-allocated test frame (640x480 solid blue). Avoids 900KB allocation per tick.
+/// Pre-allocated test frame (640x480 solid blue). Fallback when camera is unavailable.
 fn generate_test_frame() -> &'static [u8] {
     use std::sync::OnceLock;
     static FRAME: OnceLock<Vec<u8>> = OnceLock::new();
@@ -484,20 +495,64 @@ fn encode_jpeg(width: u32, height: u32, rgb_pixels: &[u8]) -> anyhow::Result<Vec
     Ok(buf)
 }
 
-async fn handle_video_ws(mut socket: WebSocket, state: Arc<RwLock<AppState>>) {
+async fn handle_video_ws(mut socket: WebSocket, state: ServerState) {
     use axum::extract::ws::Message;
     use tokio::time::{interval, Duration};
 
     tracing::info!("[WS] video client connected");
     let mut ticker = interval(Duration::from_millis(33));
 
+    // Open camera; fall back to test frames if unavailable.
+    let camera_index = { state.app.read().await.active_camera };
+    let mut camera = dlc_capture::CameraCapture::open(camera_index).ok();
+    if camera.is_none() {
+        tracing::warn!("[WS] Camera {camera_index} unavailable — sending test frames");
+    }
+    let mut last_camera_index = camera_index;
+
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                let rgb = generate_test_frame();
-                { let _s = state.read().await; }
+                // Re-open camera if user switched it.
+                let current_idx = { state.app.read().await.active_camera };
+                if current_idx != last_camera_index {
+                    camera = dlc_capture::CameraCapture::open(current_idx).ok();
+                    last_camera_index = current_idx;
+                    if camera.is_none() {
+                        tracing::warn!("[WS] Camera {current_idx} unavailable after switch");
+                    }
+                }
 
-                let jpeg = match encode_jpeg(640, 480, &rgb) {
+                // Grab a frame from camera or generate a test frame.
+                let bgr_frame = match camera.as_mut().and_then(|c| c.read_frame().ok()) {
+                    Some(f) => f,
+                    None => {
+                        // Fallback: send test frame as JPEG.
+                        let rgb = generate_test_frame();
+                        let jpeg = match encode_jpeg(640, 480, rgb) {
+                            Ok(j)  => j,
+                            Err(e) => { tracing::error!("[WS] JPEG encode error: {e}"); continue; }
+                        };
+                        if let Err(e) = socket.send(Message::Binary(jpeg.into())).await {
+                            tracing::info!("[WS] client disconnected: {e}");
+                            break;
+                        }
+                        continue;
+                    }
+                };
+
+                // If a source face is uploaded, attempt face swap on the camera frame.
+                let has_source = { state.app.read().await.source_image_bytes.is_some() };
+                let output_frame = if has_source {
+                    match try_swap_frame(&bgr_frame, &state).await {
+                        Some(swapped) => swapped,
+                        None => bgr_frame, // swap failed — send raw camera frame
+                    }
+                } else {
+                    bgr_frame
+                };
+
+                let jpeg = match encode_bgr_frame_to_jpeg(&output_frame) {
                     Ok(j)  => j,
                     Err(e) => { tracing::error!("[WS] JPEG encode error: {e}"); continue; }
                 };
@@ -522,4 +577,30 @@ async fn handle_video_ws(mut socket: WebSocket, state: Arc<RwLock<AppState>>) {
     }
 
     tracing::info!("[WS] video handler exiting");
+}
+
+/// Attempt face detection + swap on a camera frame using the uploaded source face.
+/// Returns `None` if any step fails (missing models, no face detected, etc.).
+async fn try_swap_frame(target_frame: &Frame, state: &ServerState) -> Option<Frame> {
+    let source_bytes = { state.app.read().await.source_image_bytes.clone()? };
+    let source_frame = decode_to_bgr_frame(&source_bytes).ok()?;
+
+    // Detect faces in source and target.
+    let (source_face, target_face) = {
+        let mut det_guard = state.models.detector.lock().await;
+        let detector = det_guard.as_mut()?;
+        let sf = detector.detect(&source_frame, 0.5).ok()?.into_iter().next()?;
+        let tf = detector.detect(target_frame, 0.5).ok()?.into_iter().next()?;
+        (sf, tf)
+    }; // detector guard dropped
+
+    // Swap face.
+    let mut swap_guard = state.models.swapper.lock().await;
+    let swapper = swap_guard.as_mut()?;
+    let embedding = swapper.get_embedding(&source_frame, &source_face).ok()?;
+    let mut sf = source_face;
+    sf.embedding = Some(embedding);
+    let mut output = target_frame.clone();
+    swapper.swap(&sf, &target_face, &mut output).ok()?;
+    Some(output)
 }
