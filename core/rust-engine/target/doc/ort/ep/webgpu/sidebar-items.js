@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["BufferCacheMode","DawnBackendType","PreferredLayout","ValidationMode"],"struct":["WebGPU"]};

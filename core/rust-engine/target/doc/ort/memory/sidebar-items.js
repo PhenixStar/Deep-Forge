@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["AllocatorType","DeviceType","MemoryType"],"struct":["AllocatedBlock","AllocationDevice","Allocator","MemoryInfo"]};

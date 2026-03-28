@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["DeviceFilter","PerformancePreference"],"struct":["DirectML"]};

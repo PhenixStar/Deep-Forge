@@ -1,0 +1,12 @@
+[package]
+name = "dlc-core"
+description = "Face processing pipeline: detection, swap, enhancement"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ort.workspace = true
+ndarray.workspace = true
+image.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

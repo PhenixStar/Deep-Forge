@@ -1,0 +1,11 @@
+[package]
+name = "dlc-capture"
+description = "Camera capture and virtual camera output"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+image.workspace = true
+serde.workspace = true

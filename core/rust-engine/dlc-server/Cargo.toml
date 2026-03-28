@@ -1,0 +1,17 @@
+[package]
+name = "dlc-server"
+description = "HTTP/WebSocket server replacing Python FastAPI sidecar"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dlc-core = { path = "../dlc-core" }
+dlc-capture = { path = "../dlc-capture" }
+axum = { version = "0.8", features = ["ws", "multipart"] }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tower-http = { version = "0.6", features = ["cors"] }
