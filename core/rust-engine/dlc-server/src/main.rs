@@ -6,7 +6,7 @@ use dlc_server::router::{build_router, Models, ServerState};
 use dlc_server::state::AppState;
 use dlc_core::{detect::FaceDetector, swap::FaceSwapper};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
 #[tokio::main]
 async fn main() {
@@ -36,8 +36,8 @@ async fn main() {
     let server_state = ServerState {
         app:    Arc::new(RwLock::new(app_state)),
         models: Arc::new(Models {
-            detector: Arc::new(Mutex::new(detector)),
-            swapper:  Arc::new(Mutex::new(swapper)),
+            detector: std::sync::Mutex::new(detector),
+            swapper:  std::sync::Mutex::new(swapper),
         }),
     };
 

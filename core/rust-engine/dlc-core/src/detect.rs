@@ -119,8 +119,19 @@ impl FaceDetector {
             // Feature map side length for this stride.
             let feat_side = 640 / stride;
 
+            // Debug: log score stats to diagnose detection failures.
+            let max_score = scores_data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let above_thresh = scores_data.iter().filter(|&&s| s >= threshold).count();
+            tracing::info!(
+                level_idx, stride, num_props, max_score, above_thresh,
+                scores_len = scores_data.len(),
+                "SCRFD level score stats"
+            );
+
             for anchor_idx in 0..num_props {
-                let score = scores_data[anchor_idx];
+                // SCRFD outputs raw logits — apply sigmoid to get probabilities.
+                let raw = scores_data[anchor_idx];
+                let score = 1.0 / (1.0 + (-raw).exp());
                 if score.is_nan() || score < threshold {
                     continue;
                 }

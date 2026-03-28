@@ -12,20 +12,21 @@ use axum::{
     routing::{get, post},
 };
 use serde::Deserialize;
-use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex};
+use tokio::sync::RwLock;
 use tower_http::cors::{CorsLayer, Any};
 
 use crate::state::AppState;
 use dlc_core::{detect::FaceDetector, swap::FaceSwapper, Frame};
 
 // ---------------------------------------------------------------------------
-// Model container
+// Model container — uses std::sync::Mutex so models can be used from
+// both async handlers and spawn_blocking threads.
 // ---------------------------------------------------------------------------
 
 pub struct Models {
-    pub detector: Arc<Mutex<Option<FaceDetector>>>,
-    pub swapper:  Arc<Mutex<Option<FaceSwapper>>>,
+    pub detector: Mutex<Option<FaceDetector>>,
+    pub swapper:  Mutex<Option<FaceSwapper>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -83,8 +84,8 @@ pub fn test_state() -> ServerState {
     ServerState {
         app:    Arc::new(RwLock::new(AppState::default())),
         models: Arc::new(Models {
-            detector: Arc::new(Mutex::new(None)),
-            swapper:  Arc::new(Mutex::new(None)),
+            detector: Mutex::new(None),
+            swapper:  Mutex::new(None),
         }),
     }
 }
@@ -279,7 +280,7 @@ async fn swap_image(
 
     // Lock detector, run detection, then drop the guard before acquiring swapper.
     let (source_face, target_face) = {
-        let mut det_guard = server_state.models.detector.lock().await;
+        let mut det_guard = server_state.models.detector.lock().unwrap();
         let detector = match det_guard.as_mut() {
             Some(d) => d,
             None => {
@@ -337,7 +338,7 @@ async fn swap_image(
         (sf, tf)
     }; // detector guard dropped here
 
-    let mut swap_guard = server_state.models.swapper.lock().await;
+    let mut swap_guard = server_state.models.swapper.lock().unwrap();
     let swapper = match swap_guard.as_mut() {
         Some(s) => s,
         None => {
@@ -500,64 +501,38 @@ fn encode_jpeg(width: u32, height: u32, rgb_pixels: &[u8]) -> anyhow::Result<Vec
 
 async fn handle_video_ws(mut socket: WebSocket, state: ServerState) {
     use axum::extract::ws::Message;
-    use tokio::time::{interval, Duration};
 
     tracing::info!("[WS] video client connected");
-    let mut ticker = interval(Duration::from_millis(33));
 
-    // Open camera; fall back to test frames if unavailable.
+    // Open camera on a blocking thread (OpenCV calls block).
     let camera_index = { state.app.read().await.active_camera };
-    let mut camera = dlc_capture::CameraCapture::open(camera_index).ok();
-    if camera.is_none() {
+    let camera = tokio::task::spawn_blocking(move || {
+        dlc_capture::CameraCapture::open(camera_index).ok()
+    }).await.unwrap_or(None);
+
+    let camera = Arc::new(std::sync::Mutex::new(camera));
+
+    if camera.lock().unwrap().is_none() {
         tracing::warn!("[WS] Camera {camera_index} unavailable — sending test frames");
     }
-    let mut last_camera_index = camera_index;
+
+    let mut ticker = tokio::time::interval(tokio::time::Duration::from_millis(33));
 
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                // Re-open camera if user switched it.
-                let current_idx = { state.app.read().await.active_camera };
-                if current_idx != last_camera_index {
-                    camera = dlc_capture::CameraCapture::open(current_idx).ok();
-                    last_camera_index = current_idx;
-                    if camera.is_none() {
-                        tracing::warn!("[WS] Camera {current_idx} unavailable after switch");
-                    }
-                }
+                let cam = camera.clone();
+                let st = state.clone();
 
-                // Grab a frame from camera or generate a test frame.
-                let bgr_frame = match camera.as_mut().and_then(|c| c.read_frame().ok()) {
-                    Some(f) => f,
-                    None => {
-                        // Fallback: send test frame as JPEG.
-                        let rgb = generate_test_frame();
-                        let jpeg = match encode_jpeg(640, 480, rgb) {
-                            Ok(j)  => j,
-                            Err(e) => { tracing::error!("[WS] JPEG encode error: {e}"); continue; }
-                        };
-                        if let Err(e) = socket.send(Message::Binary(jpeg.into())).await {
-                            tracing::info!("[WS] client disconnected: {e}");
-                            break;
-                        }
-                        continue;
-                    }
-                };
+                // All blocking work (camera read + inference) runs off the async runtime.
+                let jpeg_result = tokio::task::spawn_blocking(move || {
+                    produce_frame(&cam, &st)
+                }).await;
 
-                // If a source face is uploaded, attempt face swap on the camera frame.
-                let has_source = { state.app.read().await.source_image_bytes.is_some() };
-                let output_frame = if has_source {
-                    match try_swap_frame(&bgr_frame, &state).await {
-                        Some(swapped) => swapped,
-                        None => bgr_frame, // swap failed — send raw camera frame
-                    }
-                } else {
-                    bgr_frame
-                };
-
-                let jpeg = match encode_bgr_frame_to_jpeg(&output_frame) {
-                    Ok(j)  => j,
-                    Err(e) => { tracing::error!("[WS] JPEG encode error: {e}"); continue; }
+                let jpeg = match jpeg_result {
+                    Ok(Some(j)) => j,
+                    Ok(None) => continue, // encode error, skip frame
+                    Err(e) => { tracing::error!("[WS] task panic: {e}"); continue; }
                 };
 
                 if let Err(e) = socket.send(Message::Binary(jpeg.into())).await {
@@ -582,15 +557,57 @@ async fn handle_video_ws(mut socket: WebSocket, state: ServerState) {
     tracing::info!("[WS] video handler exiting");
 }
 
-/// Attempt face detection + swap on a camera frame using the uploaded source face.
-/// Returns `None` if any step fails (missing models, no face detected, etc.).
-async fn try_swap_frame(target_frame: &Frame, state: &ServerState) -> Option<Frame> {
-    let source_bytes = { state.app.read().await.source_image_bytes.clone()? };
-    let source_frame = decode_to_bgr_frame(&source_bytes).ok()?;
+/// Produce one JPEG frame (blocking). Reads camera, optionally swaps face, encodes JPEG.
+/// Returns None if encoding fails (caller skips the frame).
+fn produce_frame(
+    camera: &Arc<std::sync::Mutex<Option<dlc_capture::CameraCapture>>>,
+    state: &ServerState,
+) -> Option<Vec<u8>> {
+    // Grab camera frame or fall back to test frame.
+    let bgr_frame = {
+        let mut cam_guard = camera.lock().unwrap();
+        cam_guard.as_mut().and_then(|c| c.read_frame().ok())
+    };
+
+    let bgr_frame = match bgr_frame {
+        Some(f) => f,
+        None => {
+            // Fallback: test frame
+            let rgb = generate_test_frame();
+            return encode_jpeg(640, 480, rgb).ok();
+        }
+    };
+
+    // Check if source face is uploaded — if so, try swap.
+    // Use try_lock to avoid blocking if another task holds the state.
+    let source_bytes = {
+        let app = state.app.try_read().ok()?;
+        app.source_image_bytes.clone()
+    };
+
+    let output_frame = if let Some(src_bytes) = source_bytes {
+        match try_swap_frame_sync(&bgr_frame, &src_bytes, &state.models) {
+            Some(swapped) => swapped,
+            None => bgr_frame,
+        }
+    } else {
+        bgr_frame
+    };
+
+    encode_bgr_frame_to_jpeg(&output_frame).ok()
+}
+
+/// Synchronous face swap (runs on blocking thread).
+fn try_swap_frame_sync(
+    target_frame: &Frame,
+    source_bytes: &[u8],
+    models: &Arc<Models>,
+) -> Option<Frame> {
+    let source_frame = decode_to_bgr_frame(source_bytes).ok()?;
 
     // Detect faces in source and target.
     let (source_face, target_face) = {
-        let mut det_guard = state.models.detector.lock().await;
+        let mut det_guard = models.detector.lock().ok()?;
         let detector = det_guard.as_mut()?;
         let sf = detector.detect(&source_frame, 0.5).ok()?.into_iter().next()?;
         let tf = detector.detect(target_frame, 0.5).ok()?.into_iter().next()?;
@@ -598,7 +615,7 @@ async fn try_swap_frame(target_frame: &Frame, state: &ServerState) -> Option<Fra
     }; // detector guard dropped
 
     // Swap face.
-    let mut swap_guard = state.models.swapper.lock().await;
+    let mut swap_guard = models.swapper.lock().ok()?;
     let swapper = swap_guard.as_mut()?;
     let embedding = swapper.get_embedding(&source_frame, &source_face).ok()?;
     let mut sf = source_face;
