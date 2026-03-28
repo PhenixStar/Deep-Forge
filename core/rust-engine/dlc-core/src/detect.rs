@@ -129,9 +129,7 @@ impl FaceDetector {
             );
 
             for anchor_idx in 0..num_props {
-                // SCRFD outputs raw logits — apply sigmoid to get probabilities.
-                let raw = scores_data[anchor_idx];
-                let score = 1.0 / (1.0 + (-raw).exp());
+                let score = scores_data[anchor_idx];
                 if score.is_nan() || score < threshold {
                     continue;
                 }

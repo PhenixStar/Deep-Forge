@@ -295,7 +295,7 @@ async fn swap_image(
             }
         };
 
-        let source_faces = match detector.detect(&source_frame, 0.5) {
+        let source_faces = match detector.detect(&source_frame, 0.3) {
             Ok(f)  => f,
             Err(e) => {
                 return (
@@ -314,7 +314,7 @@ async fn swap_image(
                 .into_response();
         }
 
-        let target_faces = match detector.detect(&target_frame, 0.5) {
+        let target_faces = match detector.detect(&target_frame, 0.3) {
             Ok(f)  => f,
             Err(e) => {
                 return (
@@ -609,8 +609,8 @@ fn try_swap_frame_sync(
     let (source_face, target_face) = {
         let mut det_guard = models.detector.lock().ok()?;
         let detector = det_guard.as_mut()?;
-        let sf = detector.detect(&source_frame, 0.5).ok()?.into_iter().next()?;
-        let tf = detector.detect(target_frame, 0.5).ok()?.into_iter().next()?;
+        let sf = detector.detect(&source_frame, 0.3).ok()?.into_iter().next()?;
+        let tf = detector.detect(target_frame, 0.3).ok()?.into_iter().next()?;
         (sf, tf)
     }; // detector guard dropped
 
