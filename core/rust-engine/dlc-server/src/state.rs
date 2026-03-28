@@ -8,16 +8,29 @@ pub struct AppState {
     pub face_enhancer_gpen256: bool,
     pub face_enhancer_gpen512: bool,
     pub frame_processors: Vec<String>,
+    /// Raw image bytes of the uploaded source face image.
+    pub source_image_bytes: Option<Vec<u8>>,
+    /// Detected source face (populated once detection is wired in Week 6).
+    pub source_face: Option<dlc_core::DetectedFace>,
+    /// Directory where ONNX model files are stored.
+    pub models_dir: std::path::PathBuf,
 }
 
 impl Default for AppState {
     fn default() -> Self {
+        let models_dir = std::env::var("DEEP_LIVE_CAM_MODELS_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("models"));
+
         Self {
             active_camera: 0,
             face_enhancer_gfpgan: false,
             face_enhancer_gpen256: false,
             face_enhancer_gpen512: false,
             frame_processors: vec!["face_swapper".into()],
+            source_image_bytes: None,
+            source_face: None,
+            models_dir,
         }
     }
 }

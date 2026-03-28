@@ -1,20 +1,266 @@
-//! Face swap using inswapper_128 ONNX model.
+//! Face swap pipeline: ArcFace embedding extraction + inswapper_128 inference.
+//!
+//! # Pipeline
+//! 1. `get_embedding`: align face to 112x112 → ArcFace ONNX → L2-normalize → Vec<f32>
+//! 2. `swap`: align target to 128x128 → inswapper ONNX (source embedding + target) →
+//!    denormalize → inverse-warp result back into frame
+
+use std::path::Path;
+
+use anyhow::{Context, Result};
+use ort::{session::Session, value::Tensor};
 
 use crate::{DetectedFace, Frame};
-use anyhow::Result;
+use crate::preprocess::{align_face_arcface, align_face_swap, affine_matrix_swap, invert_affine};
 
-/// Face swapper using inswapper_128 model.
+// ---------------------------------------------------------------------------
+// FaceSwapper
+// ---------------------------------------------------------------------------
+
+/// Pre-loaded ONNX sessions for ArcFace embedding extraction and inswapper_128.
 pub struct FaceSwapper {
-    // TODO: ort::Session
+    arcface_session: Session,
+    swap_session: Session,
 }
 
 impl FaceSwapper {
-    pub fn new(_model_path: &std::path::Path) -> Result<Self> {
-        todo!("Week 6: load inswapper model")
+    /// Load both ONNX models from `models_dir`.
+    ///
+    /// Expected paths:
+    /// - `<models_dir>/buffalo_l/buffalo_l/w600k_r50.onnx`  (ArcFace R50)
+    /// - `<models_dir>/inswapper_128.onnx`                  (inswapper)
+    pub fn new(models_dir: &Path) -> Result<Self> {
+        let arcface_path = models_dir.join("buffalo_l/buffalo_l/w600k_r50.onnx");
+        let swap_path = models_dir.join("inswapper_128.onnx");
+
+        tracing::info!("Loading ArcFace from {}", arcface_path.display());
+        let arcface_session = Session::builder()
+            .context("ArcFace: session builder failed")?
+            .commit_from_file(&arcface_path)
+            .with_context(|| format!("ArcFace: failed to load {}", arcface_path.display()))?;
+
+        tracing::info!("Loading inswapper from {}", swap_path.display());
+        let swap_session = Session::builder()
+            .context("inswapper: session builder failed")?
+            .commit_from_file(&swap_path)
+            .with_context(|| format!("inswapper: failed to load {}", swap_path.display()))?;
+
+        Ok(Self { arcface_session, swap_session })
     }
 
-    /// Swap source face onto target face in frame. Returns modified frame.
-    pub fn swap(&self, _source: &DetectedFace, _target: &DetectedFace, _frame: &mut Frame) -> Result<()> {
-        todo!("Week 6: inswapper inference + blending")
+    /// Align `face` in `frame` and run ArcFace to produce a 512-dim L2-normalised
+    /// embedding vector.
+    pub fn get_embedding(&mut self, frame: &Frame, face: &DetectedFace) -> Result<Vec<f32>> {
+        // 1. Align to 112x112 using the ArcFace canonical template.
+        let aligned = align_face_arcface(frame, &face.landmarks)
+            .context("get_embedding: face alignment failed")?;
+
+        // 2. BGR HWC u8 → RGB NCHW f32, normalised: pixel/127.5 - 1.0
+        let (shape, data) = bgr_hwc_to_rgb_nchw_normalized(&aligned, 112, 112)?;
+
+        // 3. Build input tensor using (shape, data) tuple — avoids ndarray version clash.
+        let tensor = Tensor::<f32>::from_array((shape, data.into_boxed_slice()))
+            .context("get_embedding: failed to create input tensor")?;
+
+        // 4. Run ArcFace session.  `ort::inputs![value]` returns an array directly.
+        let outputs = self.arcface_session
+            .run(ort::inputs![tensor])
+            .context("get_embedding: ArcFace inference failed")?;
+
+        // 5. Extract output via try_extract_tensor (returns (&Shape, &[f32])).
+        let (_shape, raw) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .context("get_embedding: failed to extract output")?;
+
+        anyhow::ensure!(raw.len() == 512,
+            "ArcFace output has {} elements, expected 512", raw.len());
+
+        // 6. L2-normalise.
+        let norm = l2_norm(raw);
+        let embedding = raw.iter().map(|v| v / norm).collect::<Vec<_>>();
+
+        Ok(embedding)
     }
+
+    /// Swap the source face identity onto the target face region within `frame`.
+    ///
+    /// `source_face.embedding` must be populated before calling this (use
+    /// `get_embedding`).  Modifies `frame` in-place.
+    pub fn swap(
+        &mut self,
+        source_face: &DetectedFace,
+        target_face: &DetectedFace,
+        frame: &mut Frame,
+    ) -> Result<()> {
+        let src_emb = source_face
+            .embedding
+            .as_ref()
+            .context("swap: source_face.embedding is None — call get_embedding first")?;
+
+        anyhow::ensure!(src_emb.len() == 512,
+            "swap: source embedding has {} dims, expected 512", src_emb.len());
+
+        // 1. Align target face to 128x128.
+        let aligned_target = align_face_swap(frame, &target_face.landmarks)
+            .context("swap: target face alignment failed")?;
+
+        // 2. "target" input tensor [1,3,128,128], normalised 0-1, RGB.
+        let (tgt_shape, tgt_data) = bgr_hwc_to_rgb_nchw_01(&aligned_target, 128, 128)?;
+        let target_tensor = Tensor::<f32>::from_array((tgt_shape, tgt_data.into_boxed_slice()))
+            .context("swap: failed to create target tensor")?;
+
+        // 3. "source" input tensor [1,512].
+        let src_shape = vec![1i64, 512i64];
+        let src_data = src_emb.clone().into_boxed_slice();
+        let source_tensor = Tensor::<f32>::from_array((src_shape, src_data))
+            .context("swap: failed to create source tensor")?;
+
+        // 4. Run inswapper with named inputs.
+        let outputs = self.swap_session
+            .run(ort::inputs! {
+                "target" => target_tensor,
+                "source" => source_tensor
+            })
+            .context("swap: inswapper inference failed")?;
+
+        // 5. Extract output [1,3,128,128] f32.
+        let (_out_shape, out_raw) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .context("swap: failed to extract swapper output")?;
+
+        anyhow::ensure!(out_raw.len() == 3 * 128 * 128,
+            "swap: unexpected output size {}", out_raw.len());
+
+        // 6. Denormalize RGB NCHW [0,1] → BGR HWC u8.
+        let swapped_bgr = rgb_nchw_01_to_bgr_hwc(out_raw, 128, 128);
+
+        // 7. Inverse-warp patch back into frame using the forward affine matrix.
+        let fwd_mat = affine_matrix_swap(&target_face.landmarks);
+        paste_back(frame, &swapped_bgr, &fwd_mat);
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tensor preparation helpers (raw Vec, no ndarray — avoids version mismatch)
+// ---------------------------------------------------------------------------
+
+/// BGR HWC u8 → RGB NCHW f32, `pixel / 127.5 - 1.0`.  Shape: `[1,3,h,w]`.
+fn bgr_hwc_to_rgb_nchw_normalized(
+    img: &Frame,
+    h: usize,
+    w: usize,
+) -> Result<(Vec<i64>, Vec<f32>)> {
+    anyhow::ensure!(img.shape() == [h, w, 3], "Expected [{h},{w},3] frame");
+    let mut data = vec![0f32; 3 * h * w];
+    let hw = h * w;
+    for y in 0..h {
+        for x in 0..w {
+            // Frame is BGR; swap to RGB for the model.
+            let b = img[[y, x, 0]] as f32;
+            let g = img[[y, x, 1]] as f32;
+            let r = img[[y, x, 2]] as f32;
+            data[0 * hw + y * w + x] = r / 127.5 - 1.0;
+            data[1 * hw + y * w + x] = g / 127.5 - 1.0;
+            data[2 * hw + y * w + x] = b / 127.5 - 1.0;
+        }
+    }
+    Ok((vec![1i64, 3, h as i64, w as i64], data))
+}
+
+/// BGR HWC u8 → RGB NCHW f32, `pixel / 255.0`.  Shape: `[1,3,h,w]`.
+fn bgr_hwc_to_rgb_nchw_01(
+    img: &Frame,
+    h: usize,
+    w: usize,
+) -> Result<(Vec<i64>, Vec<f32>)> {
+    anyhow::ensure!(img.shape() == [h, w, 3], "Expected [{h},{w},3] frame");
+    let mut data = vec![0f32; 3 * h * w];
+    let hw = h * w;
+    for y in 0..h {
+        for x in 0..w {
+            let b = img[[y, x, 0]] as f32 / 255.0;
+            let g = img[[y, x, 1]] as f32 / 255.0;
+            let r = img[[y, x, 2]] as f32 / 255.0;
+            data[0 * hw + y * w + x] = r;
+            data[1 * hw + y * w + x] = g;
+            data[2 * hw + y * w + x] = b;
+        }
+    }
+    Ok((vec![1i64, 3, h as i64, w as i64], data))
+}
+
+/// RGB NCHW f32 `[0,1]` slice → BGR HWC u8 `Frame`.
+fn rgb_nchw_01_to_bgr_hwc(data: &[f32], h: usize, w: usize) -> Frame {
+    let hw = h * w;
+    let mut out = ndarray::Array3::<u8>::zeros((h, w, 3));
+    for y in 0..h {
+        for x in 0..w {
+            let r = (data[0 * hw + y * w + x].clamp(0.0, 1.0) * 255.0) as u8;
+            let g = (data[1 * hw + y * w + x].clamp(0.0, 1.0) * 255.0) as u8;
+            let b = (data[2 * hw + y * w + x].clamp(0.0, 1.0) * 255.0) as u8;
+            out[[y, x, 0]] = b; // store as BGR
+            out[[y, x, 1]] = g;
+            out[[y, x, 2]] = r;
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Paste-back: inverse-warp 128x128 patch into frame
+// ---------------------------------------------------------------------------
+
+/// For each pixel in `frame`, compute where it maps in the 128x128 `swapped`
+/// patch (via the inverse of `fwd_mat`).  Copy bilinear-interpolated patch
+/// colour into the frame wherever the mapping falls inside the patch.
+fn paste_back(frame: &mut Frame, swapped: &Frame, fwd_mat: &[f32; 6]) {
+    let (fh, fw) = (frame.shape()[0], frame.shape()[1]);
+    let (ph, pw) = (128usize, 128usize);
+
+    // Build inverse (frame coords → patch coords).
+    let inv = invert_affine(fwd_mat);
+    let (ia, ib, itx, ic, id, ity) = (inv[0], inv[1], inv[2], inv[3], inv[4], inv[5]);
+
+    for fy in 0..fh {
+        for fx in 0..fw {
+            let fx_f = fx as f32;
+            let fy_f = fy as f32;
+
+            let px = ia * fx_f + ib * fy_f + itx;
+            let py = ic * fx_f + id * fy_f + ity;
+
+            if px < 0.0 || py < 0.0 || px >= pw as f32 || py >= ph as f32 {
+                continue;
+            }
+
+            let x0 = px.floor() as usize;
+            let y0 = py.floor() as usize;
+            let x1 = (x0 + 1).min(pw - 1);
+            let y1 = (y0 + 1).min(ph - 1);
+            let wx = px - x0 as f32;
+            let wy = py - y0 as f32;
+
+            for c in 0..3usize {
+                let p00 = swapped[[y0, x0, c]] as f32;
+                let p01 = swapped[[y0, x1, c]] as f32;
+                let p10 = swapped[[y1, x0, c]] as f32;
+                let p11 = swapped[[y1, x1, c]] as f32;
+                let val = p00 * (1.0 - wx) * (1.0 - wy)
+                    + p01 * wx * (1.0 - wy)
+                    + p10 * (1.0 - wx) * wy
+                    + p11 * wx * wy;
+                frame[[fy, fx, c]] = val.clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Math helpers
+// ---------------------------------------------------------------------------
+
+fn l2_norm(v: &[f32]) -> f32 {
+    v.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-10)
 }

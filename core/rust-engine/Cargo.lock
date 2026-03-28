@@ -406,6 +406,7 @@ dependencies = [
  "ndarray 0.16.1",
  "ort",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -416,6 +417,7 @@ dependencies = [
  "axum",
  "dlc-capture",
  "dlc-core",
+ "image",
  "serde",
  "serde_json",
  "tokio",

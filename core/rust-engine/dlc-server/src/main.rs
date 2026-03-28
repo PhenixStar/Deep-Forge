@@ -4,7 +4,7 @@
 
 use axum::{
     Router,
-    extract::{Path, Json, ws::{WebSocket, WebSocketUpgrade}},
+    extract::{Path, Json, State, ws::{WebSocket, WebSocketUpgrade}},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -22,7 +22,17 @@ use state::AppState;
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let state = Arc::new(RwLock::new(AppState::default()));
+    // Parse --models-dir CLI arg, fall back to env var / default inside AppState::default().
+    let models_dir = parse_models_dir_arg();
+
+    let mut app_state = AppState::default();
+    if let Some(dir) = models_dir {
+        app_state.models_dir = dir;
+    }
+
+    tracing::info!("[SERVER] models_dir = {}", app_state.models_dir.display());
+
+    let state = Arc::new(RwLock::new(app_state));
 
     let cors = CorsLayer::new()
         .allow_origin([
@@ -36,6 +46,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health))
         .route("/source", post(upload_source))
+        .route("/swap/image", post(swap_image))
         .route("/cameras", get(list_cameras))
         .route("/camera/{index}", post(set_camera))
         .route("/settings", get(get_settings).post(update_settings))
@@ -50,18 +61,95 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
-// --- Handlers (stubs — wired up in Weeks 6-7) ---
+/// Parse `--models-dir <path>` from process arguments.
+fn parse_models_dir_arg() -> Option<std::path::PathBuf> {
+    let args: Vec<String> = std::env::args().collect();
+    let pos = args.iter().position(|a| a == "--models-dir")?;
+    args.get(pos + 1).map(std::path::PathBuf::from)
+}
+
+// --- Handlers ---
 
 async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"status": "ok", "backend": "rust"}))
 }
 
-async fn upload_source() -> impl IntoResponse {
-    (StatusCode::NOT_IMPLEMENTED, "TODO: Week 6")
+/// POST /source — multipart upload of a source face image.
+/// Decodes the image to validate it, then stores raw bytes in state.
+/// Face detection will be wired in Week 6 once dlc-core detection is ready.
+async fn upload_source(
+    State(state): State<Arc<RwLock<AppState>>>,
+    mut multipart: axum::extract::Multipart,
+) -> impl IntoResponse {
+    // Extract the first file field from the multipart body.
+    let field = loop {
+        match multipart.next_field().await {
+            Ok(Some(f)) => break f,
+            Ok(None) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "no file field in multipart body"})),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                tracing::error!("multipart error: {e}");
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": format!("multipart error: {e}")})),
+                )
+                    .into_response();
+            }
+        }
+    };
+
+    let bytes = match field.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("failed to read field bytes: {e}")})),
+            )
+                .into_response();
+        }
+    };
+
+    // Validate that the upload is a readable image.
+    if let Err(e) = image::load_from_memory(&bytes) {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({"error": format!("invalid image: {e}")})),
+        )
+            .into_response();
+    }
+
+    tracing::info!("source image received: {} bytes", bytes.len());
+
+    // Store raw bytes; face detection wired in Week 6.
+    let mut s = state.write().await;
+    s.source_image_bytes = Some(bytes.to_vec());
+    s.source_face = None; // reset any previous detection result
+
+    Json(serde_json::json!({"status": "ok", "bytes": bytes.len()})).into_response()
+}
+
+/// POST /swap/image — multipart with source + target images, returns swapped JPEG.
+/// Full implementation deferred to Week 6 (ONNX models not yet wired).
+async fn swap_image(
+    _state: State<Arc<RwLock<AppState>>>,
+    _multipart: axum::extract::Multipart,
+) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({
+            "error": "not implemented",
+            "detail": "/swap/image will be fully wired in Week 6 once ONNX face-swap models are integrated"
+        })),
+    )
 }
 
 async fn list_cameras(
-    state: axum::extract::State<Arc<RwLock<AppState>>>,
+    _state: State<Arc<RwLock<AppState>>>,
 ) -> impl IntoResponse {
     let cameras = dlc_capture::list_cameras().unwrap_or_default();
     Json(serde_json::json!({"cameras": cameras}))
@@ -72,7 +160,7 @@ async fn set_camera(Path(index): Path<u32>) -> impl IntoResponse {
 }
 
 async fn get_settings(
-    state: axum::extract::State<Arc<RwLock<AppState>>>,
+    State(state): State<Arc<RwLock<AppState>>>,
 ) -> impl IntoResponse {
     let s = state.read().await;
     Json(serde_json::json!({
@@ -82,6 +170,8 @@ async fn get_settings(
             "face_enhancer_gpen512": s.face_enhancer_gpen512,
         },
         "frame_processors": s.frame_processors,
+        "models_dir": s.models_dir,
+        "source_loaded": s.source_image_bytes.is_some(),
     }))
 }
 
@@ -93,7 +183,7 @@ struct SettingsUpdate {
 }
 
 async fn update_settings(
-    state: axum::extract::State<Arc<RwLock<AppState>>>,
+    State(state): State<Arc<RwLock<AppState>>>,
     Json(body): Json<SettingsUpdate>,
 ) -> impl IntoResponse {
     let mut s = state.write().await;
