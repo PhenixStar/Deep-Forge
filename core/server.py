@@ -28,7 +28,7 @@ from modules.paths import MODELS_DIR
 app = FastAPI(title="Deep-Live-Cam Server", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["tauri://localhost", "http://localhost:1420", "http://localhost:8008"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -154,10 +154,10 @@ async def video_stream(ws: WebSocket):
             # Re-fetch processors each frame so fp_ui toggle changes apply immediately
             frame_processors = get_frame_processors_modules(globals.frame_processors)
 
+            # Copy ref outside lock — processing runs without blocking /source uploads
             with _source_face_lock:
                 source = _source_face
 
-            # Run all active processors (swapper + enhancers) via generic interface
             if source is not None:
                 for processor in frame_processors:
                     frame = processor.process_frame(source, frame)

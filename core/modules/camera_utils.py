@@ -54,13 +54,16 @@ def get_available_cameras():
             camera_indices = [0, 1]
             camera_names = ["Camera 0", "Camera 1"]
         else:
-            # Linux: probe first 10 indices
+            # Linux: probe first 10 indices with quick open/release
             for i in range(10):
-                cap = cv2.VideoCapture(i)
-                if cap.isOpened():
-                    camera_indices.append(i)
-                    camera_names.append(f"Camera {i}")
-                    cap.release()
+                try:
+                    cap = cv2.VideoCapture(i)
+                    if cap.isOpened():
+                        camera_indices.append(i)
+                        camera_names.append(f"Camera {i}")
+                        cap.release()
+                except Exception:
+                    continue
 
         if not camera_names:
             return [], ["No cameras found"]

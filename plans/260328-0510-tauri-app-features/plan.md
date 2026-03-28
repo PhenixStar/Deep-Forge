@@ -1,7 +1,7 @@
 ---
 title: "Tauri App Feature Sprint"
 description: "Camera selection, face enhancers, portable Python bundle, cross-platform installers"
-status: in-progress
+status: complete
 priority: P1
 effort: 12h
 branch: main
@@ -52,7 +52,7 @@ Four features to evolve the Deep Live Cam desktop app from dev prototype to ship
 |-------|----------|--------|--------|-----------|
 | 1 | Camera selection + Face enhancer toggles (frontend + backend) | 4h | **COMPLETE** | [phase-01](phase-01-camera-enhancer-ui.md) |
 | 2 | python-build-standalone bundling | 4h | **COMPLETE** | [phase-02](phase-02-python-bundle.md) |
-| 3 | CI/CD, installers, auto-update | 4h | pending | [phase-03](phase-03-installers-cicd.md) |
+| 3 | CI/CD, installers, auto-update | 4h | **COMPLETE** | [phase-03](phase-03-installers-cicd.md) |
 
 Phases are sequential: Phase 2 depends on Phase 1 (needs working backend endpoints). Phase 3 depends on Phase 2 (needs bundled sidecar to package).
 

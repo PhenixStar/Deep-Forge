@@ -60,7 +60,8 @@ SIDECAR="$SCRIPT_DIR/../sidecar"
 export PYTHONHOME="$SIDECAR/python"
 export PYTHONPATH="$SIDECAR/app"
 export DEEP_LIVE_CAM_MODELS_DIR="$SIDECAR/models"
-export DYLD_LIBRARY_PATH="$SIDECAR/venv/lib:${DYLD_LIBRARY_PATH:-}"
+# Note: DYLD_LIBRARY_PATH is stripped by macOS SIP for hardened binaries.
+# python-build-standalone bundles its own dylibs, so this is not needed.
 exec "$SIDECAR/venv/bin/python" "$SIDECAR/app/server.py" "$@"
 WRAPPER_EOF
 chmod +x "$WRAPPER"
