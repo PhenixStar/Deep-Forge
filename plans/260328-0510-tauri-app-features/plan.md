@@ -51,7 +51,7 @@ Four features to evolve the Deep Live Cam desktop app from dev prototype to ship
 | Phase | Features | Effort | Status | Phase Doc |
 |-------|----------|--------|--------|-----------|
 | 1 | Camera selection + Face enhancer toggles (frontend + backend) | 4h | **COMPLETE** | [phase-01](phase-01-camera-enhancer-ui.md) |
-| 2 | python-build-standalone bundling | 4h | pending | [phase-02](phase-02-python-bundle.md) |
+| 2 | python-build-standalone bundling | 4h | **COMPLETE** | [phase-02](phase-02-python-bundle.md) |
 | 3 | CI/CD, installers, auto-update | 4h | pending | [phase-03](phase-03-installers-cicd.md) |
 
 Phases are sequential: Phase 2 depends on Phase 1 (needs working backend endpoints). Phase 3 depends on Phase 2 (needs bundled sidecar to package).

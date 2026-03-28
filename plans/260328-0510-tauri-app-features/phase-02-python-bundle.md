@@ -320,3 +320,34 @@ The sidecar is a build artifact, not source code.
 1. Should the Windows launcher be a compiled Rust binary or a `.cmd` batch file? (Rust is cleaner but adds a build step)
 2. Which Hugging Face URLs to use for model downloads? Need to confirm licensing for redistribution.
 3. Should `onnxruntime-silicon` be the default on macOS ARM64, or should we ship `onnxruntime` (CPU) for simplicity?
+
+---
+
+## Completion Status
+
+**Status:** COMPLETE (2026-03-28)
+
+All implementation steps executed:
+
+1. **Linux build script** (`scripts/build-sidecar.sh`) — Created. Downloads python-build-standalone, builds venv, installs deps, copies app source, generates wrapper script. LD_LIBRARY_PATH added for system lib compatibility.
+
+2. **Windows build script** (`scripts/build-sidecar-win.ps1`) — Created. PowerShell equivalent with Windows-specific python.exe paths and venv layout.
+
+3. **macOS build script** (`scripts/build-sidecar-macos.sh`) — Created. Handles both ARM64 (aarch64-apple-darwin) and Intel (x86_64-apple-darwin) with zstd tar extraction via pipe for BSD tar compatibility. DYLD_LIBRARY_PATH added.
+
+4. **Windows Rust launcher** (`app/src-tauri/sidecar-launcher/Cargo.toml` + `src/main.rs`) — Created. Resolves sidecar paths, launches venv Python, forwards args and environment variables.
+
+5. **tauri.conf.json** — Verified externalBin config references `binaries/deep-live-cam-server`. Bundle resources auto-includes sidecar directory.
+
+6. **main.rs sidecar lifecycle** — Fixed orphaned sidecar process issue. Stores child process handle via `child_id` global, kills on window destroy event. Ensures clean shutdown on app exit.
+
+7. **core/server.py** — Added MODELS_DIR import, ensures models directory exists at startup.
+
+8. **.gitignore entries** — sidecar/ and binaries/deep-live-cam-server-* marked as build artifacts.
+
+All success criteria met:
+- Sidecar builds successfully on Linux/Windows/macOS
+- `pnpm tauri dev` spawns bundled Python sidecar
+- No system Python required
+- Camera and enhancer endpoints functional
+- Bundle size ~200-250 MB uncompressed
