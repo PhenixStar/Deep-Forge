@@ -450,7 +450,20 @@ async fn swap_image(
                 .into_response();
         }
 
+        // Pick the largest face in each image.
+        let mut source_faces = source_faces;
+        source_faces.sort_by(|a, b| {
+            let area_a = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]);
+            let area_b = (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]);
+            area_b.partial_cmp(&area_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
         let sf = source_faces.into_iter().next().unwrap();
+        let mut target_faces = target_faces;
+        target_faces.sort_by(|a, b| {
+            let area_a = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]);
+            let area_b = (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]);
+            area_b.partial_cmp(&area_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
         let tf = target_faces.into_iter().next().unwrap();
         (sf, tf)
     }; // detector guard dropped here
@@ -869,13 +882,27 @@ fn try_swap_frame_sync(
     let source_frame = decode_to_bgr_frame(source_bytes).ok()?;
 
     // Detect faces in source and target, timed.
+    // Select the largest face in each image (closest to camera).
     let detect_start = std::time::Instant::now();
     let (source_face, target_face, target_faces) = {
         let mut det_guard = models.detector.lock().ok()?;
         let detector = det_guard.as_mut()?;
-        let sf = detector.detect(&source_frame, 0.3).ok()?.into_iter().next()?;
-        let tfs = detector.detect(target_frame, 0.3).ok()?;
-        let tf = tfs.iter().next()?.clone();
+
+        let mut sfs = detector.detect(&source_frame, 0.3).ok()?;
+        sfs.sort_by(|a, b| {
+            let area_a = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]);
+            let area_b = (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]);
+            area_b.partial_cmp(&area_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let sf = sfs.into_iter().next()?;
+
+        let mut tfs = detector.detect(target_frame, 0.3).ok()?;
+        tfs.sort_by(|a, b| {
+            let area_a = (a.bbox[2] - a.bbox[0]) * (a.bbox[3] - a.bbox[1]);
+            let area_b = (b.bbox[2] - b.bbox[0]) * (b.bbox[3] - b.bbox[1]);
+            area_b.partial_cmp(&area_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let tf = tfs.first()?.clone();
         (sf, tf, tfs)
     }; // detector guard dropped
     let detect_ms = detect_start.elapsed().as_secs_f64() * 1000.0;
