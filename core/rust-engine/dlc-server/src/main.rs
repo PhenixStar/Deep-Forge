@@ -55,20 +55,6 @@ async fn main() {
         Err(e) => { tracing::warn!("GPEN-512 enhancer unavailable: {e:#}");  None   }
     };
 
-    // Open camera at startup on a blocking thread (can take 10-30s on Windows).
-    tracing::info!("[SERVER] Opening camera 0 (may take up to 30s on Windows)...");
-    let camera = {
-        let cam = std::thread::spawn(|| {
-            dlc_capture::CameraCapture::open(0).ok()
-        }).join().unwrap_or(None);
-        if cam.is_some() {
-            tracing::info!("[SERVER] Camera 0 opened successfully");
-        } else {
-            tracing::warn!("[SERVER] Camera 0 unavailable — test frames will be used");
-        }
-        cam
-    };
-
     // Broadcast channel for per-frame metrics (capacity: 64 frames).
     let (metrics_tx, _) = tokio::sync::broadcast::channel(64);
 
@@ -83,9 +69,13 @@ async fn main() {
 
     let addr = if remote { "0.0.0.0:8008" } else { "127.0.0.1:8008" };
 
+    // Camera starts as None — opened in background thread after server starts.
+    let camera: Arc<std::sync::Mutex<Option<dlc_capture::CameraCapture>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
     let server_state = ServerState {
         app:    Arc::new(RwLock::new(app_state)),
-        camera: Arc::new(std::sync::Mutex::new(camera)),
+        camera: camera.clone(),
         models: Arc::new(Models {
             detector: std::sync::Mutex::new(detector),
             swapper:  std::sync::Mutex::new(swapper),
@@ -103,6 +93,21 @@ async fn main() {
     let app = build_router(server_state, remote);
 
     tracing::info!("[SERVER] Rust backend starting on {addr}");
+
+    // Open camera in background — server is available immediately.
+    // Camera becomes available when OpenCV finishes probing (10-30s on Windows).
+    std::thread::spawn(move || {
+        tracing::info!("[CAMERA] Opening camera 0 in background...");
+        match dlc_capture::CameraCapture::open(0) {
+            Ok(cam) => {
+                *camera.lock().unwrap() = Some(cam);
+                tracing::info!("[CAMERA] Camera 0 ready");
+            }
+            Err(e) => {
+                tracing::warn!("[CAMERA] Camera 0 failed: {e} — test frames will be used");
+            }
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
