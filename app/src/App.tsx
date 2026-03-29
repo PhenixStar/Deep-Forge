@@ -6,7 +6,7 @@ import { ModelManager } from "./components/model-manager";
 import { useMetricsWs } from "./hooks/use-metrics-ws";
 import { useSystemMetrics } from "./hooks/use-system-metrics";
 import { useModels } from "./hooks/use-models";
-import type { Status, Camera, Enhancers } from "./types";
+import type { Status, Camera, Enhancers, SwapCalibration } from "./types";
 
 const API_BASE = "http://localhost:8008";
 
@@ -27,6 +27,9 @@ export default function App() {
   });
 
   const [showModelManager, setShowModelManager] = useState(false);
+  const [calibration, setCalibration] = useState<SwapCalibration>({
+    swap_offset_x: 0, swap_offset_y: 0, swap_scale: 1.0,
+  });
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -105,6 +108,22 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ [key]: checked }),
+      });
+    },
+    [],
+  );
+
+  const handleCalibrationChange = useCallback(
+    (partial: Partial<SwapCalibration>) => {
+      setCalibration((prev) => {
+        const next = { ...prev, ...partial };
+        // Send to backend
+        fetch(`${API_BASE}/settings`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(partial),
+        });
+        return next;
       });
     },
     [],
@@ -206,12 +225,15 @@ export default function App() {
           onEnhancerToggle={handleEnhancerToggle}
           onSourceUpload={handleSourceUpload}
           onToggleDebug={() => setShowDebugOverlay((v) => !v)}
+          calibration={calibration}
+          onCalibrationChange={handleCalibrationChange}
         />
         <VideoCanvas
           wsRef={wsRef}
           status={status}
           onFpsUpdate={setFps}
           faces={faces}
+          swapBbox={inferenceMetrics?.swap_bbox ?? null}
           showDebugOverlay={showDebugOverlay}
         />
         <MetricsPanel

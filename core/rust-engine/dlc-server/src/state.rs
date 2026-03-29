@@ -16,6 +16,12 @@ pub struct AppState {
     pub models_dir: std::path::PathBuf,
     /// Capture resolution (width, height).
     pub resolution: (u32, u32),
+    /// Swap calibration: horizontal offset in pixels (applied to paste-back).
+    pub swap_offset_x: f32,
+    /// Swap calibration: vertical offset in pixels.
+    pub swap_offset_y: f32,
+    /// Swap calibration: scale multiplier (1.0 = default, >1 = larger face).
+    pub swap_scale: f32,
 }
 
 impl Default for AppState {
@@ -34,6 +40,9 @@ impl Default for AppState {
             source_face: None,
             models_dir,
             resolution: (640, 480),
+            swap_offset_x: 0.0,
+            swap_offset_y: 0.0,
+            swap_scale: 1.0,
         }
     }
 }

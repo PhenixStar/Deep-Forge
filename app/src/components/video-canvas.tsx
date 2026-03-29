@@ -6,6 +6,7 @@ interface VideoCanvasProps {
   status: Status;
   onFpsUpdate: (fps: number) => void;
   faces: FaceRect[];
+  swapBbox: FaceRect | null;
   showDebugOverlay: boolean;
 }
 
@@ -14,6 +15,7 @@ export function VideoCanvas({
   status,
   onFpsUpdate,
   faces,
+  swapBbox,
   showDebugOverlay,
 }: VideoCanvasProps) {
   const videoRef = useRef<HTMLCanvasElement>(null);
@@ -30,20 +32,33 @@ export function VideoCanvas({
       if (!ctx) return;
       ctx.clearRect(0, 0, width, height);
 
-      if (!showDebugOverlay || faces.length === 0) return;
+      if (!showDebugOverlay || (faces.length === 0 && !swapBbox)) return;
 
       ctx.strokeStyle = "#22c55e";
       ctx.lineWidth = 2;
       ctx.font = "12px monospace";
       ctx.fillStyle = "#22c55e";
 
+      // Green boxes: detected faces
       for (const face of faces) {
         ctx.strokeRect(face.x, face.y, face.w, face.h);
         const label = `${(face.score * 100).toFixed(0)}%`;
         ctx.fillText(label, face.x + 2, face.y - 4 > 0 ? face.y - 4 : face.y + 14);
       }
+
+      // Red box: swap overlay region
+      if (swapBbox) {
+        ctx.strokeStyle = "#ef4444";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 3]);
+        ctx.strokeRect(swapBbox.x, swapBbox.y, swapBbox.w, swapBbox.h);
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#ef4444";
+        ctx.font = "11px monospace";
+        ctx.fillText("SWAP", swapBbox.x + 2, swapBbox.y + swapBbox.h + 12);
+      }
     },
-    [faces, showDebugOverlay],
+    [faces, swapBbox, showDebugOverlay],
   );
 
   // Attach WS message handler to render JPEG frames

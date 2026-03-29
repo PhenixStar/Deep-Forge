@@ -25,6 +25,13 @@ export interface FrameMetrics {
   total_ms: number;
   face_count: number;
   faces: FaceRect[];
+  swap_bbox: FaceRect | null;
+}
+
+export interface SwapCalibration {
+  swap_offset_x: number;
+  swap_offset_y: number;
+  swap_scale: number;
 }
 
 export interface SystemMetrics {

@@ -38,6 +38,8 @@ pub struct FrameMetrics {
     pub total_ms: f64,
     pub face_count: usize,
     pub faces: Vec<FaceRect>,
+    /// Bounding box of the swapped face region (for red overlay).
+    pub swap_bbox: Option<FaceRect>,
 }
 
 impl Default for FrameMetrics {
@@ -47,6 +49,7 @@ impl Default for FrameMetrics {
             swap_ms: 0.0,
             total_ms: 0.0,
             face_count: 0,
+            swap_bbox: None,
             faces: vec![],
         }
     }
@@ -571,6 +574,9 @@ async fn get_settings(
             "width":  s.resolution.0,
             "height": s.resolution.1,
         },
+        "swap_offset_x": s.swap_offset_x,
+        "swap_offset_y": s.swap_offset_y,
+        "swap_scale":    s.swap_scale,
     }))
 }
 
@@ -581,6 +587,9 @@ struct SettingsUpdate {
     face_enhancer_gpen512: Option<bool>,
     resolution_width:      Option<u32>,
     resolution_height:     Option<u32>,
+    swap_offset_x:         Option<f32>,
+    swap_offset_y:         Option<f32>,
+    swap_scale:            Option<f32>,
 }
 
 async fn update_settings(
@@ -594,6 +603,9 @@ async fn update_settings(
     if let (Some(w), Some(h)) = (body.resolution_width, body.resolution_height) {
         s.resolution = (w, h);
     }
+    if let Some(v) = body.swap_offset_x { s.swap_offset_x = v; }
+    if let Some(v) = body.swap_offset_y { s.swap_offset_y = v; }
+    if let Some(v) = body.swap_scale    { s.swap_scale = v.clamp(0.5, 2.0); }
     Json(serde_json::json!({"status": "ok"}))
 }
 
@@ -793,27 +805,31 @@ fn produce_frame(
         }
     };
 
-    // Read source face + enhancer settings in a single lock acquisition.
-    let (source_bytes, use_gfpgan, use_gpen256, use_gpen512) = {
+    // Read source face + enhancer settings + calibration in a single lock.
+    let (source_bytes, use_gfpgan, use_gpen256, use_gpen512, offset_x, offset_y, swap_scale) = {
         let app = state.app.read().unwrap();
         (
             app.source_image_bytes.clone(),
             app.face_enhancer_gfpgan,
             app.face_enhancer_gpen256,
             app.face_enhancer_gpen512,
+            app.swap_offset_x,
+            app.swap_offset_y,
+            app.swap_scale,
         )
     };
 
     let (mut output_frame, metrics) = if let Some(src_bytes) = source_bytes {
-        match try_swap_frame_sync(&bgr_frame, &src_bytes, &state.models) {
-            Some((swapped, face_rects, detect_ms, swap_ms)) => {
+        match try_swap_frame_sync(&bgr_frame, &src_bytes, &state.models, offset_x, offset_y, swap_scale) {
+            Some((swapped, face_rects, swap_bbox, detect_ms, swap_ms)) => {
                 let face_count = face_rects.len();
                 let metrics = FrameMetrics {
                     detect_ms,
                     swap_ms,
-                    total_ms: 0.0, // set below after enhancement
+                    total_ms: 0.0,
                     face_count,
                     faces: face_rects,
+                    swap_bbox: Some(swap_bbox),
                 };
                 (swapped, metrics)
             }
@@ -873,12 +889,15 @@ fn produce_frame(
 }
 
 /// Synchronous face swap with timing (runs on blocking thread).
-/// Returns (swapped_frame, face_rects, detect_ms, swap_ms) on success.
+/// Returns (swapped_frame, face_rects, swap_bbox, detect_ms, swap_ms).
 fn try_swap_frame_sync(
     target_frame: &Frame,
     source_bytes: &[u8],
     models: &Arc<Models>,
-) -> Option<(Frame, Vec<FaceRect>, f64, f64)> {
+    offset_x: f32,
+    offset_y: f32,
+    scale: f32,
+) -> Option<(Frame, Vec<FaceRect>, FaceRect, f64, f64)> {
     let source_frame = decode_to_bgr_frame(source_bytes).ok()?;
 
     // Detect faces in source and target, timed.
@@ -919,6 +938,28 @@ fn try_swap_frame_sync(
         })
         .collect();
 
+    // Apply calibration: offset + scale the target face landmarks.
+    let mut calibrated_target = target_face.clone();
+    if offset_x != 0.0 || offset_y != 0.0 || scale != 1.0 {
+        // Compute face center from landmarks
+        let cx: f32 = calibrated_target.landmarks.iter().map(|l| l[0]).sum::<f32>() / 5.0;
+        let cy: f32 = calibrated_target.landmarks.iter().map(|l| l[1]).sum::<f32>() / 5.0;
+        for lm in calibrated_target.landmarks.iter_mut() {
+            // Scale around center, then offset
+            lm[0] = (lm[0] - cx) * scale + cx + offset_x;
+            lm[1] = (lm[1] - cy) * scale + cy + offset_y;
+        }
+        // Also adjust bbox
+        let bw = calibrated_target.bbox[2] - calibrated_target.bbox[0];
+        let bh = calibrated_target.bbox[3] - calibrated_target.bbox[1];
+        let bcx = (calibrated_target.bbox[0] + calibrated_target.bbox[2]) / 2.0;
+        let bcy = (calibrated_target.bbox[1] + calibrated_target.bbox[3]) / 2.0;
+        calibrated_target.bbox[0] = bcx - bw * scale / 2.0 + offset_x;
+        calibrated_target.bbox[1] = bcy - bh * scale / 2.0 + offset_y;
+        calibrated_target.bbox[2] = bcx + bw * scale / 2.0 + offset_x;
+        calibrated_target.bbox[3] = bcy + bh * scale / 2.0 + offset_y;
+    }
+
     // Swap face, timed.
     let swap_start = std::time::Instant::now();
     let mut swap_guard = models.swapper.lock().ok()?;
@@ -927,8 +968,17 @@ fn try_swap_frame_sync(
     let mut sf = source_face;
     sf.embedding = Some(embedding);
     let mut output = target_frame.clone();
-    swapper.swap(&sf, &target_face, &mut output).ok()?;
+    swapper.swap(&sf, &calibrated_target, &mut output).ok()?;
     let swap_ms = swap_start.elapsed().as_secs_f64() * 1000.0;
 
-    Some((output, face_rects, detect_ms, swap_ms))
+    // Swap bbox for the red overlay
+    let swap_bbox = FaceRect {
+        x: calibrated_target.bbox[0],
+        y: calibrated_target.bbox[1],
+        w: calibrated_target.bbox[2] - calibrated_target.bbox[0],
+        h: calibrated_target.bbox[3] - calibrated_target.bbox[1],
+        score: calibrated_target.score,
+    };
+
+    Some((output, face_rects, swap_bbox, detect_ms, swap_ms))
 }

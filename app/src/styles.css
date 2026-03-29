@@ -517,3 +517,13 @@ main {
   font-size: 13px;
   padding: 7px;
 }
+
+/* Calibration sliders */
+.calibration { display: flex; flex-direction: column; gap: 4px; }
+.calibration .section-label { display: block; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; color: #888; }
+.cal-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.cal-label { width: 52px; color: #888; flex-shrink: 0; }
+.cal-row input[type="range"] { flex: 1; accent-color: var(--primary); height: 4px; }
+.cal-value { width: 32px; text-align: right; font-family: monospace; font-size: 11px; }
+.btn-reset { background: var(--border); color: var(--text); border: none; padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; margin-top: 4px; }
+.btn-reset:hover { background: #444; }

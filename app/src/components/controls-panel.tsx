@@ -1,5 +1,5 @@
 import { useState, useEffect, type ChangeEvent } from "react";
-import type { Status, Camera, Enhancers, Resolution } from "../types";
+import type { Status, Camera, Enhancers, Resolution, SwapCalibration } from "../types";
 
 const API_BASE = "http://localhost:8008";
 
@@ -29,6 +29,8 @@ interface ControlsPanelProps {
   onEnhancerToggle: (key: keyof Enhancers, checked: boolean) => void;
   onSourceUpload: (e: ChangeEvent<HTMLInputElement>) => void;
   onToggleDebug: () => void;
+  calibration: SwapCalibration;
+  onCalibrationChange: (cal: Partial<SwapCalibration>) => void;
 }
 
 const ENHANCER_LABELS: { key: keyof Enhancers; label: string }[] = [
@@ -51,6 +53,8 @@ export function ControlsPanel({
   onEnhancerToggle,
   onSourceUpload,
   onToggleDebug,
+  calibration,
+  onCalibrationChange,
 }: ControlsPanelProps) {
   const [cameras, setCameras] = useState<Camera[]>(initialCameras);
   const [refreshing, setRefreshing] = useState(false);
@@ -197,6 +201,34 @@ export function ControlsPanel({
           />
           Debug Overlay
         </label>
+      </div>
+
+      <div className="calibration">
+        <label className="section-label">Swap Calibration</label>
+        <div className="cal-row">
+          <span className="cal-label">X Offset</span>
+          <input type="range" min={-50} max={50} step={1}
+            value={calibration.swap_offset_x}
+            onChange={e => onCalibrationChange({ swap_offset_x: Number(e.target.value) })} />
+          <span className="cal-value">{calibration.swap_offset_x}</span>
+        </div>
+        <div className="cal-row">
+          <span className="cal-label">Y Offset</span>
+          <input type="range" min={-50} max={50} step={1}
+            value={calibration.swap_offset_y}
+            onChange={e => onCalibrationChange({ swap_offset_y: Number(e.target.value) })} />
+          <span className="cal-value">{calibration.swap_offset_y}</span>
+        </div>
+        <div className="cal-row">
+          <span className="cal-label">Scale</span>
+          <input type="range" min={0.5} max={2.0} step={0.05}
+            value={calibration.swap_scale}
+            onChange={e => onCalibrationChange({ swap_scale: Number(e.target.value) })} />
+          <span className="cal-value">{calibration.swap_scale.toFixed(2)}</span>
+        </div>
+        <button className="btn-reset" onClick={() => onCalibrationChange({ swap_offset_x: 0, swap_offset_y: 0, swap_scale: 1.0 })}>
+          Reset
+        </button>
       </div>
 
       <div className="actions">
