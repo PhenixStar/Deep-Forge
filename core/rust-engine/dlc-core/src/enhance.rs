@@ -172,7 +172,13 @@ impl FaceEnhancer {
     ///
     /// `input_size` must match the model's spatial dimension (256, 512, or 1024).
     pub fn new(model_path: &std::path::Path, input_size: u32, provider: &crate::GpuProvider) -> Result<Self> {
+        // Try the requested provider first; fall back to CPU if it fails
+        // (some enhancer models have ops unsupported by DirectML).
         let session = provider.load_session(model_path)
+            .or_else(|e| {
+                tracing::warn!("Enhancer failed with {:?}, retrying with CPU: {e}", provider);
+                crate::GpuProvider::Cpu.load_session(model_path)
+            })
             .with_context(|| format!("Failed to load model: {}", model_path.display()))?;
 
         tracing::info!(
