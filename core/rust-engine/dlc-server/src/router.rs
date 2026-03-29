@@ -73,6 +73,9 @@ pub struct ServerState {
     pub models:         Arc<Models>,
     pub metrics_tx:     tokio::sync::broadcast::Sender<String>,
     pub gpu_provider:   String,
+    pub remote_mode:    bool,
+    pub bind_address:   String,
+    pub api_token:      Option<String>,
 }
 
 impl axum::extract::FromRef<ServerState> for Arc<RwLock<AppState>> {
@@ -89,28 +92,37 @@ impl axum::extract::FromRef<ServerState> for Arc<RwLock<AppState>> {
 ///
 /// Tests construct `ServerState` directly with `models: None` to avoid
 /// loading ONNX files from disk.
-pub fn build_router(server_state: ServerState) -> Router {
-    // Tauri v2 uses http://tauri.localhost on Windows, tauri://localhost on macOS/Linux
-    let cors = CorsLayer::new()
-        .allow_origin([
-            "tauri://localhost".parse().unwrap(),
-            "http://tauri.localhost".parse().unwrap(),
-            "https://tauri.localhost".parse().unwrap(),
-            "http://localhost:1420".parse().unwrap(),
-            "http://localhost:8008".parse().unwrap(),
-        ])
-        .allow_methods(Any)
-        .allow_headers(Any);
+pub fn build_router(server_state: ServerState, remote: bool) -> Router {
+    let cors = if remote {
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods(Any)
+            .allow_headers(Any)
+    } else {
+        // Tauri v2 uses http://tauri.localhost on Windows, tauri://localhost on macOS/Linux
+        CorsLayer::new()
+            .allow_origin([
+                "tauri://localhost".parse().unwrap(),
+                "http://tauri.localhost".parse().unwrap(),
+                "https://tauri.localhost".parse().unwrap(),
+                "http://localhost:1420".parse().unwrap(),
+                "http://localhost:8008".parse().unwrap(),
+            ])
+            .allow_methods(Any)
+            .allow_headers(Any)
+    };
 
     Router::new()
-        .route("/health",         get(health))
-        .route("/source",         post(upload_source))
-        .route("/swap/image",     post(swap_image))
-        .route("/cameras",        get(list_cameras))
-        .route("/camera/{index}", post(set_camera))
-        .route("/settings",       get(get_settings).post(update_settings))
-        .route("/ws/video",       get(ws_video))
-        .route("/ws/metrics",     get(ws_metrics))
+        .route("/health",          get(health))
+        .route("/source",          post(upload_source))
+        .route("/swap/image",      post(swap_image))
+        .route("/cameras",         get(list_cameras))
+        .route("/cameras/refresh", post(refresh_cameras))
+        .route("/camera/{index}",  post(set_camera))
+        .route("/settings",        get(get_settings).post(update_settings))
+        .route("/models/status",   get(models_status))
+        .route("/ws/video",        get(ws_video))
+        .route("/ws/metrics",      get(ws_metrics))
         .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024))
         .layer(cors)
         .with_state(server_state)
@@ -127,6 +139,9 @@ pub fn test_state() -> ServerState {
         }),
         metrics_tx,
         gpu_provider: "Auto".to_string(),
+        remote_mode:  false,
+        bind_address: "127.0.0.1:8008".to_string(),
+        api_token:    None,
     }
 }
 
@@ -146,8 +161,45 @@ async fn health(State(server_state): State<ServerState>) -> impl IntoResponse {
         "models": {
             "detector": detector_ok,
             "swapper":  swapper_ok,
-        }
+        },
+        "remote_mode": server_state.remote_mode,
+        "bind_address": server_state.bind_address,
     }))
+}
+
+async fn models_status(
+    State(server_state): State<ServerState>,
+) -> impl IntoResponse {
+    let app = server_state.app.read().await;
+    let models_dir = &app.models_dir;
+
+    let model_defs = [
+        ("SCRFD (Face Detection)", "buffalo_l/buffalo_l/det_10g.onnx", true),
+        ("ArcFace (Recognition)", "buffalo_l/buffalo_l/w600k_r50.onnx", true),
+        ("inswapper (Face Swap)", "inswapper_128.onnx", true),
+        ("GFPGAN (Enhancer)", "gfpgan-1024.onnx", false),
+        ("GPEN-256", "GPEN-BFR-256.onnx", false),
+        ("GPEN-512", "GPEN-BFR-512.onnx", false),
+    ];
+
+    let models: Vec<serde_json::Value> = model_defs.iter().map(|(name, file, required)| {
+        let path = models_dir.join(file);
+        let file_exists = path.exists();
+        let size_mb = if file_exists {
+            std::fs::metadata(&path).ok().map(|m| m.len() as f64 / 1_048_576.0)
+        } else {
+            None
+        };
+        serde_json::json!({
+            "name": name,
+            "file": file,
+            "file_exists": file_exists,
+            "size_mb": size_mb,
+            "required": required,
+        })
+    }).collect();
+
+    Json(serde_json::json!({"models": models}))
 }
 
 async fn upload_source(
@@ -482,21 +534,27 @@ async fn get_settings(
     let s = state.read().await;
     Json(serde_json::json!({
         "fp_ui": {
-            "face_enhancer":       s.face_enhancer_gfpgan,
+            "face_enhancer":         s.face_enhancer_gfpgan,
             "face_enhancer_gpen256": s.face_enhancer_gpen256,
             "face_enhancer_gpen512": s.face_enhancer_gpen512,
         },
         "frame_processors": s.frame_processors,
         "models_dir":        s.models_dir,
         "source_loaded":     s.source_image_bytes.is_some(),
+        "resolution": {
+            "width":  s.resolution.0,
+            "height": s.resolution.1,
+        },
     }))
 }
 
 #[derive(Deserialize)]
 struct SettingsUpdate {
-    face_enhancer:        Option<bool>,
+    face_enhancer:         Option<bool>,
     face_enhancer_gpen256: Option<bool>,
     face_enhancer_gpen512: Option<bool>,
+    resolution_width:      Option<u32>,
+    resolution_height:     Option<u32>,
 }
 
 async fn update_settings(
@@ -507,7 +565,17 @@ async fn update_settings(
     if let Some(v) = body.face_enhancer         { s.face_enhancer_gfpgan   = v; }
     if let Some(v) = body.face_enhancer_gpen256  { s.face_enhancer_gpen256  = v; }
     if let Some(v) = body.face_enhancer_gpen512  { s.face_enhancer_gpen512  = v; }
+    if let (Some(w), Some(h)) = (body.resolution_width, body.resolution_height) {
+        s.resolution = (w, h);
+    }
     Json(serde_json::json!({"status": "ok"}))
+}
+
+async fn refresh_cameras() -> impl IntoResponse {
+    let cameras = tokio::task::spawn_blocking(|| {
+        dlc_capture::list_cameras().unwrap_or_default()
+    }).await.unwrap_or_default();
+    Json(serde_json::json!({"cameras": cameras}))
 }
 
 async fn ws_video(

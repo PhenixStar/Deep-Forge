@@ -14,6 +14,8 @@ pub struct AppState {
     pub source_face: Option<dlc_core::DetectedFace>,
     /// Directory where ONNX model files are stored.
     pub models_dir: std::path::PathBuf,
+    /// Capture resolution (width, height).
+    pub resolution: (u32, u32),
 }
 
 impl Default for AppState {
@@ -31,6 +33,7 @@ impl Default for AppState {
             source_image_bytes: None,
             source_face: None,
             models_dir,
+            resolution: (640, 480),
         }
     }
 }

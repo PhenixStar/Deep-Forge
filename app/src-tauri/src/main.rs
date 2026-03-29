@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use tauri::Manager;
+use tauri::Emitter;
 use std::sync::Mutex;
 use std::process::{Child, Command};
 use sysinfo::System;
@@ -24,6 +25,29 @@ fn get_backend_url() -> String {
 }
 
 #[tauri::command]
+async fn download_model(app: tauri::AppHandle, name: String, url: String, dest: String) -> Result<(), String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+    let total = response.content_length().unwrap_or(0);
+    let mut downloaded: u64 = 0;
+    let mut file = tokio::fs::File::create(&dest).await.map_err(|e| e.to_string())?;
+    let mut stream = response.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        downloaded += chunk.len() as u64;
+        let _ = app.emit("model_download_progress", serde_json::json!({
+            "name": name, "downloaded": downloaded, "total": total
+        }));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 fn get_system_metrics(state: tauri::State<MetricsState>) -> SystemMetrics {
     let mut sys = state.0.lock().unwrap();
     sys.refresh_cpu_usage();
@@ -39,7 +63,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![get_backend_url, get_system_metrics])
+        .invoke_handler(tauri::generate_handler![get_backend_url, get_system_metrics, download_model])
         .setup(|app| {
             app.manage(MetricsState(Mutex::new(System::new_all())));
 

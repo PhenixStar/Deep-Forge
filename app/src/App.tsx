@@ -2,8 +2,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { ControlsPanel } from "./components/controls-panel";
 import { VideoCanvas } from "./components/video-canvas";
 import { MetricsPanel } from "./components/metrics-panel";
+import { ModelManager } from "./components/model-manager";
 import { useMetricsWs } from "./hooks/use-metrics-ws";
 import { useSystemMetrics } from "./hooks/use-system-metrics";
+import { useModels } from "./hooks/use-models";
 import type { Status, Camera, Enhancers } from "./types";
 
 const API_BASE = "http://localhost:8008";
@@ -24,12 +26,16 @@ export default function App() {
     face_enhancer_gpen512: false,
   });
 
+  const [showModelManager, setShowModelManager] = useState(false);
+
   const wsRef = useRef<WebSocket | null>(null);
 
   const inferenceMetrics = useMetricsWs(status === "processing");
   const systemMetrics = useSystemMetrics(2000);
+  const { models } = useModels();
 
   const faces = inferenceMetrics?.faces ?? [];
+  const missingRequired = models.filter((m) => m.required && !m.file_exists);
 
   // Initial data fetch
   useEffect(() => {
@@ -167,9 +173,21 @@ export default function App() {
     <div className="app">
       <header>
         <h1>Deep Live Cam</h1>
-        <div className="status">
-          <span className="dot" style={{ background: statusColor }} />
-          {status} {status === "processing" && `(${fps} fps)`}
+        <div className="header-right">
+          <button
+            className="btn-models"
+            onClick={() => setShowModelManager(true)}
+            title="Model Manager"
+          >
+            Models
+            {missingRequired.length > 0 && (
+              <span className="models-badge">{missingRequired.length}</span>
+            )}
+          </button>
+          <div className="status">
+            <span className="dot" style={{ background: statusColor }} />
+            {status} {status === "processing" && `(${fps} fps)`}
+          </div>
         </div>
       </header>
 
@@ -205,7 +223,25 @@ export default function App() {
         />
       </main>
 
+      {missingRequired.length > 0 && (
+        <div className="models-warning">
+          {missingRequired.length} required model
+          {missingRequired.length > 1 ? "s" : ""} missing — face swap
+          unavailable.{" "}
+          <button
+            className="models-warning-link"
+            onClick={() => setShowModelManager(true)}
+          >
+            Download now
+          </button>
+        </div>
+      )}
+
       {error && <div className="error">{error}</div>}
+
+      {showModelManager && (
+        <ModelManager onClose={() => setShowModelManager(false)} />
+      )}
     </div>
   );
 }

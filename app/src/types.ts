@@ -32,3 +32,17 @@ export interface SystemMetrics {
   ram_used_gb: number;
   ram_total_gb: number;
 }
+
+export interface ModelInfo {
+  name: string;
+  file: string;
+  file_exists: boolean;
+  size_mb: number | null;
+  required: boolean;
+}
+
+export interface Resolution {
+  width: number;
+  height: number;
+  label: string;
+}

@@ -13,6 +13,7 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let models_dir = parse_models_dir_arg();
+    let remote = parse_remote_flag();
 
     let mut app_state = AppState::default();
     if let Some(dir) = models_dir {
@@ -41,6 +42,17 @@ async fn main() {
     // Broadcast channel for per-frame metrics (capacity: 64 frames).
     let (metrics_tx, _) = tokio::sync::broadcast::channel(64);
 
+    // Generate API token when running in remote mode.
+    let api_token = if remote {
+        let token = generate_token();
+        tracing::info!("[SERVER] Remote mode enabled. API token: {}", token);
+        Some(token)
+    } else {
+        None
+    };
+
+    let addr = if remote { "0.0.0.0:8008" } else { "127.0.0.1:8008" };
+
     let server_state = ServerState {
         app:    Arc::new(RwLock::new(app_state)),
         models: Arc::new(Models {
@@ -49,11 +61,13 @@ async fn main() {
         }),
         metrics_tx,
         gpu_provider: gpu_provider_name,
+        remote_mode: remote,
+        bind_address: addr.to_string(),
+        api_token,
     };
 
-    let app = build_router(server_state);
+    let app = build_router(server_state, remote);
 
-    let addr = "127.0.0.1:8008";
     tracing::info!("[SERVER] Rust backend starting on {addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
@@ -64,4 +78,22 @@ fn parse_models_dir_arg() -> Option<std::path::PathBuf> {
     let args: Vec<String> = std::env::args().collect();
     let pos = args.iter().position(|a| a == "--models-dir")?;
     args.get(pos + 1).map(std::path::PathBuf::from)
+}
+
+fn parse_remote_flag() -> bool {
+    std::env::args().any(|a| a == "--remote")
+}
+
+fn generate_token() -> String {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let s = RandomState::new();
+    let mut h = s.build_hasher();
+    h.write_u64(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64,
+    );
+    format!("{:016x}", h.finish())
 }
