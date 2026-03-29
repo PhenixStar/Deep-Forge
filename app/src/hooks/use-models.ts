@@ -12,7 +12,17 @@ const MODEL_URLS: Record<string, string> = {
     "https://huggingface.co/hacksider/deep-live-cam/resolve/main/buffalo_l/buffalo_l/w600k_r50.onnx",
   "inswapper_128.onnx":
     "https://huggingface.co/hacksider/deep-live-cam/resolve/main/inswapper_128_fp16.onnx",
+  "gfpgan-1024.onnx":
+    "https://huggingface.co/hacksider/deep-live-cam/resolve/main/gfpgan-1024.onnx",
+  "GPEN-BFR-256.onnx":
+    "https://huggingface.co/hacksider/deep-live-cam/resolve/main/GPEN-BFR-256.onnx",
+  "GPEN-BFR-512.onnx":
+    "https://huggingface.co/hacksider/deep-live-cam/resolve/main/GPEN-BFR-512.onnx",
 };
+
+export function hasDownloadUrl(file: string): boolean {
+  return file in MODEL_URLS;
+}
 
 interface DownloadProgressEvent {
   name: string;
@@ -58,34 +68,36 @@ export function useModels(): {
   }, [fetchModels]);
 
   const downloadModel = useCallback(
-    (model: ModelInfo) => {
+    async (model: ModelInfo) => {
       const url = MODEL_URLS[model.file];
       if (!url) return;
 
       setDownloading((prev) => ({ ...prev, [model.name]: 0 }));
 
-      // Build a destination path relative to the models dir.
-      // The backend resolves models_dir; we pass a relative path that matches.
-      invoke<void>("download_model", {
-        name: model.name,
-        url,
-        dest: model.file,
-      })
-        .then(() => {
-          setDownloading((prev) => {
-            const next = { ...prev };
-            delete next[model.name];
-            return next;
-          });
-          fetchModels();
-        })
-        .catch(() => {
-          setDownloading((prev) => {
-            const next = { ...prev };
-            delete next[model.name];
-            return next;
-          });
+      try {
+        // Resolve absolute path via Tauri command
+        const modelsDir = await invoke<string>("get_models_dir");
+        const dest = modelsDir + "/" + model.file.replace(/\//g, "/");
+
+        await invoke<void>("download_model", {
+          name: model.name,
+          url,
+          dest,
         });
+
+        setDownloading((prev) => {
+          const next = { ...prev };
+          delete next[model.name];
+          return next;
+        });
+        fetchModels();
+      } catch {
+        setDownloading((prev) => {
+          const next = { ...prev };
+          delete next[model.name];
+          return next;
+        });
+      }
     },
     [fetchModels],
   );

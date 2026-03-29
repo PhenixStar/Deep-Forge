@@ -4,7 +4,7 @@
 
 use dlc_server::router::{build_router, Models, ServerState};
 use dlc_server::state::AppState;
-use dlc_core::{detect::FaceDetector, swap::FaceSwapper, GpuProvider};
+use dlc_core::{detect::FaceDetector, swap::FaceSwapper, enhance::FaceEnhancer, GpuProvider};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -39,6 +39,23 @@ async fn main() {
         Err(e) => { tracing::warn!("FaceSwapper unavailable: {e:#}");  None   }
     };
 
+    // Load enhancer models (optional — face swap works without them).
+    let gfpgan_path = app_state.models_dir.join("gfpgan-1024.onnx");
+    let enhancer_gfpgan = match FaceEnhancer::new(&gfpgan_path, 1024, &provider) {
+        Ok(e)  => { tracing::info!("GFPGAN enhancer loaded");              Some(e) }
+        Err(e) => { tracing::warn!("GFPGAN enhancer unavailable: {e:#}");  None   }
+    };
+    let gpen256_path = app_state.models_dir.join("GPEN-BFR-256.onnx");
+    let enhancer_gpen256 = match FaceEnhancer::new(&gpen256_path, 256, &provider) {
+        Ok(e)  => { tracing::info!("GPEN-256 enhancer loaded");              Some(e) }
+        Err(e) => { tracing::warn!("GPEN-256 enhancer unavailable: {e:#}");  None   }
+    };
+    let gpen512_path = app_state.models_dir.join("GPEN-BFR-512.onnx");
+    let enhancer_gpen512 = match FaceEnhancer::new(&gpen512_path, 512, &provider) {
+        Ok(e)  => { tracing::info!("GPEN-512 enhancer loaded");              Some(e) }
+        Err(e) => { tracing::warn!("GPEN-512 enhancer unavailable: {e:#}");  None   }
+    };
+
     // Broadcast channel for per-frame metrics (capacity: 64 frames).
     let (metrics_tx, _) = tokio::sync::broadcast::channel(64);
 
@@ -58,6 +75,9 @@ async fn main() {
         models: Arc::new(Models {
             detector: std::sync::Mutex::new(detector),
             swapper:  std::sync::Mutex::new(swapper),
+            enhancer_gfpgan:  std::sync::Mutex::new(enhancer_gfpgan),
+            enhancer_gpen256: std::sync::Mutex::new(enhancer_gpen256),
+            enhancer_gpen512: std::sync::Mutex::new(enhancer_gpen512),
         }),
         metrics_tx,
         gpu_provider: gpu_provider_name,

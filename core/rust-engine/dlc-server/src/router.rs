@@ -61,6 +61,9 @@ impl Default for FrameMetrics {
 pub struct Models {
     pub detector: Mutex<Option<FaceDetector>>,
     pub swapper:  Mutex<Option<FaceSwapper>>,
+    pub enhancer_gfpgan:  Mutex<Option<dlc_core::enhance::FaceEnhancer>>,
+    pub enhancer_gpen256: Mutex<Option<dlc_core::enhance::FaceEnhancer>>,
+    pub enhancer_gpen512: Mutex<Option<dlc_core::enhance::FaceEnhancer>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +139,9 @@ pub fn test_state() -> ServerState {
         models:       Arc::new(Models {
             detector: Mutex::new(None),
             swapper:  Mutex::new(None),
+            enhancer_gfpgan:  Mutex::new(None),
+            enhancer_gpen256: Mutex::new(None),
+            enhancer_gpen512: Mutex::new(None),
         }),
         metrics_tx,
         gpu_provider: "Auto".to_string(),
@@ -153,6 +159,9 @@ async fn health(State(server_state): State<ServerState>) -> impl IntoResponse {
     let models = &server_state.models;
     let detector_ok = models.detector.lock().map(|g| g.is_some()).unwrap_or(false);
     let swapper_ok  = models.swapper.lock().map(|g| g.is_some()).unwrap_or(false);
+    let gfpgan_ok   = models.enhancer_gfpgan.lock().map(|g| g.is_some()).unwrap_or(false);
+    let gpen256_ok  = models.enhancer_gpen256.lock().map(|g| g.is_some()).unwrap_or(false);
+    let gpen512_ok  = models.enhancer_gpen512.lock().map(|g| g.is_some()).unwrap_or(false);
 
     Json(serde_json::json!({
         "status": "ok",
@@ -161,6 +170,9 @@ async fn health(State(server_state): State<ServerState>) -> impl IntoResponse {
         "models": {
             "detector": detector_ok,
             "swapper":  swapper_ok,
+            "gfpgan":   gfpgan_ok,
+            "gpen256":  gpen256_ok,
+            "gpen512":  gpen512_ok,
         },
         "remote_mode": server_state.remote_mode,
         "bind_address": server_state.bind_address,
@@ -765,14 +777,20 @@ fn produce_frame(
         app.source_image_bytes.clone()
     };
 
-    let (output_frame, metrics) = if let Some(src_bytes) = source_bytes {
+    // Read enhancer settings.
+    let (use_gfpgan, use_gpen256, use_gpen512) = {
+        let app = state.app.blocking_read();
+        (app.face_enhancer_gfpgan, app.face_enhancer_gpen256, app.face_enhancer_gpen512)
+    };
+
+    let (mut output_frame, metrics) = if let Some(src_bytes) = source_bytes {
         match try_swap_frame_sync(&bgr_frame, &src_bytes, &state.models) {
             Some((swapped, face_rects, detect_ms, swap_ms)) => {
                 let face_count = face_rects.len();
                 let metrics = FrameMetrics {
                     detect_ms,
                     swap_ms,
-                    total_ms: total_start.elapsed().as_secs_f64() * 1000.0,
+                    total_ms: 0.0, // set below after enhancement
                     face_count,
                     faces: face_rects,
                 };
@@ -793,6 +811,41 @@ fn produce_frame(
         };
         (bgr_frame, metrics)
     };
+
+    // Apply face enhancement if enabled and faces were detected.
+    if !metrics.faces.is_empty() {
+        let bbox = &[
+            metrics.faces[0].x,
+            metrics.faces[0].y,
+            metrics.faces[0].x + metrics.faces[0].w,
+            metrics.faces[0].y + metrics.faces[0].h,
+        ];
+
+        if use_gfpgan {
+            if let Ok(mut guard) = state.models.enhancer_gfpgan.lock() {
+                if let Some(enhancer) = guard.as_mut() {
+                    let _ = enhancer.enhance(&mut output_frame, bbox);
+                }
+            }
+        }
+        if use_gpen256 {
+            if let Ok(mut guard) = state.models.enhancer_gpen256.lock() {
+                if let Some(enhancer) = guard.as_mut() {
+                    let _ = enhancer.enhance(&mut output_frame, bbox);
+                }
+            }
+        }
+        if use_gpen512 {
+            if let Ok(mut guard) = state.models.enhancer_gpen512.lock() {
+                if let Some(enhancer) = guard.as_mut() {
+                    let _ = enhancer.enhance(&mut output_frame, bbox);
+                }
+            }
+        }
+    }
+
+    let mut metrics = metrics;
+    metrics.total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
 
     let jpeg = encode_bgr_frame_to_jpeg(&output_frame).ok()?;
     Some((jpeg, metrics))

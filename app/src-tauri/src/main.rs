@@ -25,9 +25,24 @@ fn get_backend_url() -> String {
 }
 
 #[tauri::command]
+fn get_models_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let resource_dir = app.path().resource_dir()
+        .map_err(|e| format!("resource_dir: {e}"))?;
+    let models_dir = resource_dir.join("models");
+    Ok(models_dir.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
 async fn download_model(app: tauri::AppHandle, name: String, url: String, dest: String) -> Result<(), String> {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
+
+    // Create parent directories if needed (e.g., buffalo_l/buffalo_l/)
+    let dest_path = std::path::Path::new(&dest);
+    if let Some(parent) = dest_path.parent() {
+        tokio::fs::create_dir_all(parent).await
+            .map_err(|e| format!("create dirs: {e}"))?;
+    }
 
     let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
     let total = response.content_length().unwrap_or(0);
@@ -63,7 +78,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![get_backend_url, get_system_metrics, download_model])
+        .invoke_handler(tauri::generate_handler![get_backend_url, get_system_metrics, get_models_dir, download_model])
         .setup(|app| {
             app.manage(MetricsState(Mutex::new(System::new_all())));
 

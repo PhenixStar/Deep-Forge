@@ -1,5 +1,5 @@
 import type { ModelInfo } from "../types";
-import { useModels } from "../hooks/use-models";
+import { useModels, hasDownloadUrl } from "../hooks/use-models";
 
 interface ModelManagerProps {
   onClose: () => void;
@@ -43,11 +43,7 @@ export function ModelManager({ onClose }: ModelManagerProps) {
         <div className="mm-list">
           {models.map((model) => {
             const pct = downloading[model.name];
-            const hasUrl = [
-              "buffalo_l/buffalo_l/det_10g.onnx",
-              "buffalo_l/buffalo_l/w600k_r50.onnx",
-              "inswapper_128.onnx",
-            ].includes(model.file);
+            const hasUrl = hasDownloadUrl(model.file);
 
             return (
               <div key={model.file} className="mm-card">

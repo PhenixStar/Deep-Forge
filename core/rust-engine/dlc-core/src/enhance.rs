@@ -171,10 +171,8 @@ impl FaceEnhancer {
     /// Load an ONNX enhancement model from `model_path`.
     ///
     /// `input_size` must match the model's spatial dimension (256, 512, or 1024).
-    pub fn new(model_path: &std::path::Path, input_size: u32) -> Result<Self> {
-        let session = ort::session::Session::builder()
-            .context("Failed to create ort session builder")?
-            .commit_from_file(model_path)
+    pub fn new(model_path: &std::path::Path, input_size: u32, provider: &crate::GpuProvider) -> Result<Self> {
+        let session = provider.load_session(model_path)
             .with_context(|| format!("Failed to load model: {}", model_path.display()))?;
 
         tracing::info!(
