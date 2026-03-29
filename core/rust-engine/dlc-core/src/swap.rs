@@ -30,8 +30,8 @@ impl FaceSwapper {
     /// - `<models_dir>/buffalo_l/buffalo_l/w600k_r50.onnx`  (ArcFace R50)
     /// - `<models_dir>/inswapper_128.onnx`                  (inswapper)
     pub fn new(models_dir: &Path, provider: &crate::GpuProvider) -> Result<Self> {
-        let arcface_path = crate::GpuProvider::resolve_model_path(&models_dir.join("buffalo_l/buffalo_l/w600k_r50.onnx"));
-        let swap_path = crate::GpuProvider::resolve_model_path(&models_dir.join("inswapper_128.onnx"));
+        let arcface_path = provider.resolve_model_path(&models_dir.join("buffalo_l/buffalo_l/w600k_r50.onnx"));
+        let swap_path = provider.resolve_model_path(&models_dir.join("inswapper_128.onnx"));
 
         tracing::info!("Loading ArcFace from {}", arcface_path.display());
         let arcface_session = provider.load_session(&arcface_path)

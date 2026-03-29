@@ -10,75 +10,171 @@ pub mod preprocess;
 use anyhow::Result;
 use ndarray::Array3;
 
-/// GPU execution provider configuration.
-#[derive(Debug, Clone, Default)]
+/// GPU/accelerator execution provider configuration.
+///
+/// Auto-detection priority:
+///   CUDA (NVIDIA) > DirectML (AMD/Intel/NVIDIA on Windows) > VitisAI NPU > CPU
+#[derive(Debug, Clone)]
 pub enum GpuProvider {
-    /// Try DirectML first, fall back to CPU.
-    #[default]
+    /// Auto-detect best available: CUDA > DirectML > CPU.
     Auto,
-    /// Force DirectML with a specific device ID.
+    /// Force CUDA with a specific device ID (NVIDIA GPUs).
+    Cuda { device_id: i32 },
+    /// Force DirectML with a specific device ID (AMD/Intel/NVIDIA on Windows).
     DirectML { device_id: i32 },
+    /// AMD XDNA2 NPU via VitisAI EP.
+    /// Requires: Ryzen AI SDK installed, custom onnxruntime.dll with VitisAI,
+    /// vaip_config.json, and INT8 quantized models.
+    Npu { config_file: String, cache_dir: String },
     /// CPU only.
     Cpu,
-    /// AMD XDNA2 NPU via VitisAI EP (requires Ryzen AI SDK + INT8 quantized models).
-    /// Only available on Windows with Ryzen AI 9 HX 370+ processors.
-    Npu { config_file: String },
+}
+
+impl Default for GpuProvider {
+    fn default() -> Self { Self::Auto }
 }
 
 impl GpuProvider {
+    /// Detect the best available provider at runtime.
+    /// Checks env vars and available EPs to select optimal config.
+    pub fn detect() -> Self {
+        // User overrides via env var: DEEP_FORGE_EP=cuda|directml|npu|cpu
+        if let Ok(ep) = std::env::var("DEEP_FORGE_EP") {
+            match ep.to_lowercase().as_str() {
+                "cuda"     => return Self::Cuda { device_id: 0 },
+                "directml" => return Self::DirectML { device_id: 0 },
+                "npu"      => return Self::Npu {
+                    config_file: std::env::var("DEEP_FORGE_NPU_CONFIG")
+                        .unwrap_or_else(|_| "vaip_config.json".into()),
+                    cache_dir: std::env::var("DEEP_FORGE_NPU_CACHE")
+                        .unwrap_or_else(|_| "./npu_cache".into()),
+                },
+                "cpu"      => return Self::Cpu,
+                _          => tracing::warn!("Unknown DEEP_FORGE_EP={ep}, using auto-detect"),
+            }
+        }
+
+        // Auto-detect: the ort crate will try each EP in order and use the
+        // first one that initializes successfully. We configure the fallback
+        // chain in load_session(). Here we just pick the default strategy.
+        Self::Auto
+    }
+
+    /// Human-readable name for the active provider (shown in /health and UI).
+    pub fn display_name(&self) -> &str {
+        match self {
+            Self::Auto => "Auto (CUDA > DirectML > CPU)",
+            Self::Cuda { .. } => "CUDA",
+            Self::DirectML { .. } => "DirectML",
+            Self::Npu { .. } => "VitisAI NPU",
+            Self::Cpu => "CPU",
+        }
+    }
+
     /// Load an ONNX model with the appropriate execution providers.
     ///
-    /// Level3 graph optimisation is applied on all paths: it enables FP16
-    /// layout rewrites on hardware that supports it (DirectML, CUDA, VitisAI).
+    /// The EP fallback chain depends on the variant:
+    /// - Auto: CUDA → DirectML → CPU (tries all, ort picks first working one)
+    /// - Cuda: CUDA → CPU
+    /// - DirectML: DirectML → CPU
+    /// - Npu: VitisAI → CPU (requires AMD Ryzen AI SDK's custom ORT build)
+    /// - Cpu: CPU only
+    ///
+    /// Level3 graph optimization enables FP16 layout rewrites on capable hardware.
     pub fn load_session(&self, model_path: &std::path::Path) -> Result<ort::session::Session> {
         use ort::ep;
         use ort::session::builder::GraphOptimizationLevel;
 
-        let device_id = match self {
-            GpuProvider::DirectML { device_id } => *device_id,
-            _ => 0,
-        };
+        let mut builder = ort::session::Session::builder()
+            .map_err(|e| anyhow::anyhow!("Session::builder: {e}"))?;
 
+        builder = builder
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|e| anyhow::anyhow!("with_optimization_level: {e}"))?;
+
+        // DirectML and VitisAI both require memory pattern disabled.
+        let needs_disable_mem_pattern = matches!(
+            self,
+            Self::Auto | Self::DirectML { .. } | Self::Npu { .. }
+        );
+        if needs_disable_mem_pattern {
+            builder = builder
+                .with_memory_pattern(false)
+                .map_err(|e| anyhow::anyhow!("with_memory_pattern: {e}"))?;
+        }
+
+        // Build the EP chain based on the selected provider.
         let session = match self {
-            GpuProvider::Auto | GpuProvider::DirectML { .. } => {
-                // DirectML requires memory pattern disabled.
-                // Level3 (layout optimisation) enables FP16 graph rewrites on
-                // hardware that supports it (DirectML, CUDA).
-                ort::session::Session::builder()
-                    .map_err(|e| anyhow::anyhow!("Session::builder: {e}"))?
-                    .with_optimization_level(GraphOptimizationLevel::Level3)
-                    .map_err(|e| anyhow::anyhow!("with_optimization_level: {e}"))?
-                    .with_memory_pattern(false)
-                    .map_err(|e| anyhow::anyhow!("with_memory_pattern: {e}"))?
+            Self::Auto => {
+                // Full chain: try CUDA (NVIDIA), then DirectML (AMD/Intel), then CPU.
+                // ort skips EPs that fail to initialize — first working one wins.
+                builder
                     .with_execution_providers([
-                        ep::DirectML::default().with_device_id(device_id).build(),
+                        ep::CUDA::default().build(),
+                        ep::DirectML::default().build(),
                         ep::CPU::default().build(),
                     ])
                     .map_err(|e| anyhow::anyhow!("with_execution_providers: {e}"))?
                     .commit_from_file(model_path)
                     .map_err(|e| anyhow::anyhow!("commit_from_file: {e}"))?
             }
-            GpuProvider::Cpu => {
-                ort::session::Session::builder()
-                    .map_err(|e| anyhow::anyhow!("Session::builder: {e}"))?
-                    .with_optimization_level(GraphOptimizationLevel::Level3)
-                    .map_err(|e| anyhow::anyhow!("with_optimization_level: {e}"))?
+            Self::Cuda { device_id } => {
+                builder
                     .with_execution_providers([
+                        ep::CUDA::default().with_device_id(*device_id).build(),
                         ep::CPU::default().build(),
                     ])
                     .map_err(|e| anyhow::anyhow!("with_execution_providers: {e}"))?
                     .commit_from_file(model_path)
                     .map_err(|e| anyhow::anyhow!("commit_from_file: {e}"))?
             }
-            GpuProvider::Npu { .. } => {
-                // VitisAI EP requires specific setup: quantized INT8 models + vaip_config.json
-                // This is a scaffold — full implementation needs onnxruntime-vitisai Python wheel
-                // or the AMD Ryzen AI SDK's custom ort build.
-                tracing::warn!("NPU provider requested but not yet supported in Rust build. Falling back to CPU.");
-                ort::session::Session::builder()
-                    .map_err(|e| anyhow::anyhow!("Session::builder: {e}"))?
-                    .with_optimization_level(GraphOptimizationLevel::Level3)
-                    .map_err(|e| anyhow::anyhow!("with_optimization_level: {e}"))?
+            Self::DirectML { device_id } => {
+                builder
+                    .with_execution_providers([
+                        ep::DirectML::default().with_device_id(*device_id).build(),
+                        ep::CPU::default().build(),
+                    ])
+                    .map_err(|e| anyhow::anyhow!("with_execution_providers: {e}"))?
+                    .commit_from_file(model_path)
+                    .map_err(|e| anyhow::anyhow!("commit_from_file: {e}"))?
+            }
+            Self::Npu { config_file, cache_dir } => {
+                // VitisAI EP: the underlying onnxruntime.dll must be built with
+                // VitisAI support (from AMD Ryzen AI SDK). The ort Rust crate
+                // passes EP config through to the C API — if the DLL supports it,
+                // it works. If not, falls back to CPU.
+                //
+                // Setup on Sweep:
+                //   1. Install Ryzen AI SDK: ryzen-ai-1.7.0.msi
+                //   2. Copy custom onnxruntime.dll to ort-dml-libs/
+                //   3. Set ORT_LIB_PATH=ort-dml-libs
+                //   4. Place vaip_config.json in the working directory
+                //   5. Use INT8 quantized models (quantize with amd-quark)
+                tracing::info!(
+                    "NPU: VitisAI EP config_file={config_file} cache_dir={cache_dir}"
+                );
+
+                // Create cache dir for compiled NPU binaries.
+                let _ = std::fs::create_dir_all(cache_dir);
+
+                // VitisAI EP is registered via its string name. If the ORT build
+                // includes it, it will initialize; otherwise ort logs a warning
+                // and falls back to the next EP (CPU).
+                builder
+                    .with_execution_providers([
+                        ep::Vitis::default()
+                            .with_config_file(config_file)
+                            .with_cache_dir(cache_dir)
+                            .with_cache_key("deep-forge")
+                            .build(),
+                        ep::CPU::default().build(),
+                    ])
+                    .map_err(|e| anyhow::anyhow!("with_execution_providers: {e}"))?
+                    .commit_from_file(model_path)
+                    .map_err(|e| anyhow::anyhow!("commit_from_file: {e}"))?
+            }
+            Self::Cpu => {
+                builder
                     .with_execution_providers([ep::CPU::default().build()])
                     .map_err(|e| anyhow::anyhow!("with_execution_providers: {e}"))?
                     .commit_from_file(model_path)
@@ -89,23 +185,31 @@ impl GpuProvider {
         Ok(session)
     }
 
-    /// Try to load the FP16 variant of a model first (e.g. `inswapper_128_fp16.onnx`),
-    /// falling back to the FP32 path if the FP16 file does not exist.
-    ///
-    /// The FP16 variant must be placed alongside the base model with the
-    /// `_fp16` suffix appended to the stem:
-    ///   `inswapper_128.onnx`  →  `inswapper_128_fp16.onnx`
-    pub fn resolve_model_path(base_path: &std::path::Path) -> std::path::PathBuf {
+    /// Try FP16 model first, INT8 second (for NPU), then FP32 fallback.
+    pub fn resolve_model_path(&self, base_path: &std::path::Path) -> std::path::PathBuf {
         let stem = base_path.file_stem().unwrap_or_default().to_str().unwrap_or("");
         let ext  = base_path.extension().unwrap_or_default().to_str().unwrap_or("onnx");
+
+        // NPU prefers INT8 quantized models.
+        if matches!(self, Self::Npu { .. }) {
+            let int8_name = format!("{}_int8.{}", stem, ext);
+            let int8_path = base_path.with_file_name(&int8_name);
+            if int8_path.exists() {
+                tracing::info!("Using INT8 model for NPU: {}", int8_path.display());
+                return int8_path;
+            }
+        }
+
+        // GPU providers prefer FP16 for ~2x throughput.
         let fp16_name = format!("{}_fp16.{}", stem, ext);
         let fp16_path = base_path.with_file_name(&fp16_name);
         if fp16_path.exists() {
             tracing::info!("Using FP16 model: {}", fp16_path.display());
-            fp16_path
-        } else {
-            base_path.to_path_buf()
+            return fp16_path;
         }
+
+        // Default to FP32.
+        base_path.to_path_buf()
     }
 }
 

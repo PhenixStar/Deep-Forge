@@ -46,7 +46,7 @@ pub struct FaceDetector {
 impl FaceDetector {
     /// Load the SCRFD model from `model_path` (det_10g.onnx).
     pub fn new(model_path: &std::path::Path, provider: &crate::GpuProvider) -> Result<Self> {
-        let model_path = crate::GpuProvider::resolve_model_path(model_path);
+        let model_path = provider.resolve_model_path(model_path);
         tracing::info!("Loading SCRFD model from {}", model_path.display());
 
         let session = provider.load_session(&model_path)

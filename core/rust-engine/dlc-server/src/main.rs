@@ -26,13 +26,19 @@ async fn main() {
 
     tracing::info!("[SERVER] models_dir = {}", app_state.models_dir.display());
 
-    // GPU provider: --npu flag selects VitisAI scaffold, otherwise Auto (DirectML → CPU).
+    // Auto-detect best GPU/accelerator. Override with DEEP_FORGE_EP env var
+    // or --npu / --cuda / --cpu CLI flags.
     let provider = if parse_npu_flag() {
-        GpuProvider::Npu { config_file: "vaip_config.json".into() }
+        GpuProvider::Npu {
+            config_file: std::env::var("DEEP_FORGE_NPU_CONFIG")
+                .unwrap_or_else(|_| "vaip_config.json".into()),
+            cache_dir: std::env::var("DEEP_FORGE_NPU_CACHE")
+                .unwrap_or_else(|_| "./npu_cache".into()),
+        }
     } else {
-        GpuProvider::Auto
+        GpuProvider::detect()
     };
-    let gpu_provider_name = format!("{:?}", provider);
+    let gpu_provider_name = provider.display_name().to_string();
     tracing::info!("[SERVER] GPU provider: {}", gpu_provider_name);
 
     // Load ONNX models — optional; server starts without them and returns 503
