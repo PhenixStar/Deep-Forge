@@ -26,8 +26,12 @@ async fn main() {
 
     tracing::info!("[SERVER] models_dir = {}", app_state.models_dir.display());
 
-    // GPU provider: try DirectML first, fall back to CPU.
-    let provider = GpuProvider::Auto;
+    // GPU provider: --npu flag selects VitisAI scaffold, otherwise Auto (DirectML → CPU).
+    let provider = if parse_npu_flag() {
+        GpuProvider::Npu { config_file: "vaip_config.json".into() }
+    } else {
+        GpuProvider::Auto
+    };
     let gpu_provider_name = format!("{:?}", provider);
     tracing::info!("[SERVER] GPU provider: {}", gpu_provider_name);
 
@@ -127,6 +131,10 @@ fn parse_models_dir_arg() -> Option<std::path::PathBuf> {
 
 fn parse_remote_flag() -> bool {
     std::env::args().any(|a| a == "--remote")
+}
+
+fn parse_npu_flag() -> bool {
+    std::env::args().any(|a| a == "--npu")
 }
 
 fn generate_token() -> String {

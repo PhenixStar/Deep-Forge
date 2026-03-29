@@ -82,7 +82,7 @@ mod opencv_backend {
         core::{Mat, MatTraitConst, CV_8UC3},
         prelude::{VideoCaptureTrait, VideoCaptureTraitConst},
         videoio::{
-            VideoCapture, CAP_ANY, CAP_PROP_FRAME_HEIGHT, CAP_PROP_FRAME_WIDTH,
+            VideoCapture, CAP_ANY, CAP_DSHOW, CAP_PROP_FRAME_HEIGHT, CAP_PROP_FRAME_WIDTH,
         },
     };
 
@@ -92,7 +92,14 @@ mod opencv_backend {
 
     impl CameraCaptureInner {
         pub fn open(index: u32) -> Result<Self> {
-            let mut cap = VideoCapture::new(index as i32, CAP_ANY)?;
+            // On Windows, MSMF (the default CAP_ANY backend) can take 30+ seconds
+            // to initialise a camera.  DirectShow initialises in under a second.
+            #[cfg(target_os = "windows")]
+            let backend = CAP_DSHOW;
+            #[cfg(not(target_os = "windows"))]
+            let backend = CAP_ANY;
+
+            let mut cap = VideoCapture::new(index as i32, backend)?;
             anyhow::ensure!(
                 cap.is_opened()?,
                 "camera index {} could not be opened",
@@ -143,10 +150,16 @@ mod opencv_backend {
 
     pub fn list_cameras_opencv() -> Result<Vec<CameraInfo>> {
         let mut cameras = Vec::new();
-        // Probe only 0-3 to avoid long hangs on Windows (each failed index
-        // can block for several seconds with DirectShow/MSMF backends).
+        // Probe only 0-3 to limit enumeration time.  On Windows we use
+        // CAP_DSHOW so each probe completes quickly; CAP_ANY (MSMF) can
+        // block for 30+ seconds per index.
+        #[cfg(target_os = "windows")]
+        let backend = CAP_DSHOW;
+        #[cfg(not(target_os = "windows"))]
+        let backend = CAP_ANY;
+
         for i in 0..4u32 {
-            if let Ok(cap) = VideoCapture::new(i as i32, CAP_ANY) {
+            if let Ok(cap) = VideoCapture::new(i as i32, backend) {
                 if cap.is_opened().unwrap_or(false) {
                     cameras.push(CameraInfo {
                         index: i,

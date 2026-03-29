@@ -20,12 +20,19 @@ pub enum GpuProvider {
     DirectML { device_id: i32 },
     /// CPU only.
     Cpu,
+    /// AMD XDNA2 NPU via VitisAI EP (requires Ryzen AI SDK + INT8 quantized models).
+    /// Only available on Windows with Ryzen AI 9 HX 370+ processors.
+    Npu { config_file: String },
 }
 
 impl GpuProvider {
     /// Load an ONNX model with the appropriate execution providers.
+    ///
+    /// Level3 graph optimisation is applied on all paths: it enables FP16
+    /// layout rewrites on hardware that supports it (DirectML, CUDA, VitisAI).
     pub fn load_session(&self, model_path: &std::path::Path) -> Result<ort::session::Session> {
         use ort::ep;
+        use ort::session::builder::GraphOptimizationLevel;
 
         let device_id = match self {
             GpuProvider::DirectML { device_id } => *device_id,
@@ -35,8 +42,12 @@ impl GpuProvider {
         let session = match self {
             GpuProvider::Auto | GpuProvider::DirectML { .. } => {
                 // DirectML requires memory pattern disabled.
+                // Level3 (layout optimisation) enables FP16 graph rewrites on
+                // hardware that supports it (DirectML, CUDA).
                 ort::session::Session::builder()
                     .map_err(|e| anyhow::anyhow!("Session::builder: {e}"))?
+                    .with_optimization_level(GraphOptimizationLevel::Level3)
+                    .map_err(|e| anyhow::anyhow!("with_optimization_level: {e}"))?
                     .with_memory_pattern(false)
                     .map_err(|e| anyhow::anyhow!("with_memory_pattern: {e}"))?
                     .with_execution_providers([
@@ -50,6 +61,8 @@ impl GpuProvider {
             GpuProvider::Cpu => {
                 ort::session::Session::builder()
                     .map_err(|e| anyhow::anyhow!("Session::builder: {e}"))?
+                    .with_optimization_level(GraphOptimizationLevel::Level3)
+                    .map_err(|e| anyhow::anyhow!("with_optimization_level: {e}"))?
                     .with_execution_providers([
                         ep::CPU::default().build(),
                     ])
@@ -57,9 +70,42 @@ impl GpuProvider {
                     .commit_from_file(model_path)
                     .map_err(|e| anyhow::anyhow!("commit_from_file: {e}"))?
             }
+            GpuProvider::Npu { .. } => {
+                // VitisAI EP requires specific setup: quantized INT8 models + vaip_config.json
+                // This is a scaffold — full implementation needs onnxruntime-vitisai Python wheel
+                // or the AMD Ryzen AI SDK's custom ort build.
+                tracing::warn!("NPU provider requested but not yet supported in Rust build. Falling back to CPU.");
+                ort::session::Session::builder()
+                    .map_err(|e| anyhow::anyhow!("Session::builder: {e}"))?
+                    .with_optimization_level(GraphOptimizationLevel::Level3)
+                    .map_err(|e| anyhow::anyhow!("with_optimization_level: {e}"))?
+                    .with_execution_providers([ep::CPU::default().build()])
+                    .map_err(|e| anyhow::anyhow!("with_execution_providers: {e}"))?
+                    .commit_from_file(model_path)
+                    .map_err(|e| anyhow::anyhow!("commit_from_file: {e}"))?
+            }
         };
 
         Ok(session)
+    }
+
+    /// Try to load the FP16 variant of a model first (e.g. `inswapper_128_fp16.onnx`),
+    /// falling back to the FP32 path if the FP16 file does not exist.
+    ///
+    /// The FP16 variant must be placed alongside the base model with the
+    /// `_fp16` suffix appended to the stem:
+    ///   `inswapper_128.onnx`  →  `inswapper_128_fp16.onnx`
+    pub fn resolve_model_path(base_path: &std::path::Path) -> std::path::PathBuf {
+        let stem = base_path.file_stem().unwrap_or_default().to_str().unwrap_or("");
+        let ext  = base_path.extension().unwrap_or_default().to_str().unwrap_or("onnx");
+        let fp16_name = format!("{}_fp16.{}", stem, ext);
+        let fp16_path = base_path.with_file_name(&fp16_name);
+        if fp16_path.exists() {
+            tracing::info!("Using FP16 model: {}", fp16_path.display());
+            fp16_path
+        } else {
+            base_path.to_path_buf()
+        }
     }
 }
 
