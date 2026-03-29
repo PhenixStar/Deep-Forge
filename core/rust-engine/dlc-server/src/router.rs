@@ -12,8 +12,7 @@ use axum::{
     routing::{get, post},
 };
 use serde::Deserialize;
-use std::sync::{Arc, Mutex};
-use tokio::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
 use tower_http::cors::{CorsLayer, Any};
 
 use crate::state::AppState;
@@ -182,7 +181,7 @@ async fn health(State(server_state): State<ServerState>) -> impl IntoResponse {
 async fn models_status(
     State(server_state): State<ServerState>,
 ) -> impl IntoResponse {
-    let app = server_state.app.read().await;
+    let app = server_state.app.read().unwrap();
     let models_dir = &app.models_dir;
 
     let model_defs = [
@@ -260,7 +259,7 @@ async fn upload_source(
 
     tracing::info!("source image received: {} bytes", bytes.len());
 
-    let mut s = state.write().await;
+    let mut s = state.write().unwrap();
     s.source_image_bytes = Some(bytes.to_vec());
     s.source_face = None;
 
@@ -535,7 +534,7 @@ async fn set_camera(
             .into_response();
     }
 
-    let mut s = state.write().await;
+    let mut s = state.write().unwrap();
     s.active_camera = index;
     Json(serde_json::json!({"status": "ok", "camera_index": index})).into_response()
 }
@@ -543,7 +542,7 @@ async fn set_camera(
 async fn get_settings(
     State(state): State<Arc<RwLock<AppState>>>,
 ) -> impl IntoResponse {
-    let s = state.read().await;
+    let s = state.read().unwrap();
     Json(serde_json::json!({
         "fp_ui": {
             "face_enhancer":         s.face_enhancer_gfpgan,
@@ -573,7 +572,7 @@ async fn update_settings(
     State(state): State<Arc<RwLock<AppState>>>,
     Json(body): Json<SettingsUpdate>,
 ) -> impl IntoResponse {
-    let mut s = state.write().await;
+    let mut s = state.write().unwrap();
     if let Some(v) = body.face_enhancer         { s.face_enhancer_gfpgan   = v; }
     if let Some(v) = body.face_enhancer_gpen256  { s.face_enhancer_gpen256  = v; }
     if let Some(v) = body.face_enhancer_gpen512  { s.face_enhancer_gpen512  = v; }
@@ -684,17 +683,28 @@ async fn handle_video_ws(mut socket: WebSocket, state: ServerState) {
 
     tracing::info!("[WS] video client connected");
 
-    // Open camera on a blocking thread (OpenCV calls block).
-    let camera_index = { state.app.read().await.active_camera };
-    let camera = tokio::task::spawn_blocking(move || {
-        dlc_capture::CameraCapture::open(camera_index).ok()
-    }).await.unwrap_or(None);
+    // Open camera on a blocking thread with timeout (OpenCV can hang on Windows).
+    let camera_index = { state.app.read().unwrap().active_camera };
+    let camera_future = tokio::task::spawn_blocking(move || {
+        tracing::info!("[WS] opening camera {camera_index}...");
+        let cam = dlc_capture::CameraCapture::open(camera_index).ok();
+        tracing::info!("[WS] camera open result: {}", if cam.is_some() { "OK" } else { "FAILED" });
+        cam
+    });
+    // Timeout camera open after 5 seconds to avoid hanging forever.
+    let camera = match tokio::time::timeout(
+        tokio::time::Duration::from_secs(15),
+        camera_future,
+    ).await {
+        Ok(Ok(cam)) => cam,
+        _ => {
+            tracing::warn!("[WS] Camera open timed out or failed — using test frames");
+            None
+        }
+    };
 
     let camera = Arc::new(std::sync::Mutex::new(camera));
-
-    if camera.lock().unwrap().is_none() {
-        tracing::warn!("[WS] Camera {camera_index} unavailable — sending test frames");
-    }
+    tracing::info!("[WS] entering frame loop");
 
     let mut ticker = tokio::time::interval(tokio::time::Duration::from_millis(33));
 
@@ -762,25 +772,31 @@ fn produce_frame(
         None => {
             // Fallback: test frame — no swap, zero metrics.
             let rgb = generate_test_frame();
-            let jpeg = encode_jpeg(640, 480, rgb).ok()?;
-            let metrics = FrameMetrics {
-                total_ms: total_start.elapsed().as_secs_f64() * 1000.0,
-                ..Default::default()
-            };
-            return Some((jpeg, metrics));
+            match encode_jpeg(640, 480, rgb) {
+                Ok(jpeg) => {
+                    let metrics = FrameMetrics {
+                        total_ms: total_start.elapsed().as_secs_f64() * 1000.0,
+                        ..Default::default()
+                    };
+                    return Some((jpeg, metrics));
+                }
+                Err(e) => {
+                    tracing::error!("[WS] test frame encode failed: {e}");
+                    return None;
+                }
+            }
         }
     };
 
-    // Check if source face is uploaded — if so, try swap.
-    let source_bytes = {
-        let app = state.app.blocking_read();
-        app.source_image_bytes.clone()
-    };
-
-    // Read enhancer settings.
-    let (use_gfpgan, use_gpen256, use_gpen512) = {
-        let app = state.app.blocking_read();
-        (app.face_enhancer_gfpgan, app.face_enhancer_gpen256, app.face_enhancer_gpen512)
+    // Read source face + enhancer settings in a single lock acquisition.
+    let (source_bytes, use_gfpgan, use_gpen256, use_gpen512) = {
+        let app = state.app.read().unwrap();
+        (
+            app.source_image_bytes.clone(),
+            app.face_enhancer_gfpgan,
+            app.face_enhancer_gpen256,
+            app.face_enhancer_gpen512,
+        )
     };
 
     let (mut output_frame, metrics) = if let Some(src_bytes) = source_bytes {

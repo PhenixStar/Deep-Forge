@@ -5,8 +5,7 @@
 use dlc_server::router::{build_router, Models, ServerState};
 use dlc_server::state::AppState;
 use dlc_core::{detect::FaceDetector, swap::FaceSwapper, enhance::FaceEnhancer, GpuProvider};
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 #[tokio::main]
 async fn main() {
