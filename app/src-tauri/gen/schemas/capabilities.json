@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default app capabilities","local":true,"windows":["main"],"permissions":["core:default","shell:allow-spawn","shell:allow-execute","updater:default"]}}
+{"default":{"identifier":"default","description":"Default app capabilities","local":true,"windows":["main"],"permissions":["core:default",{"identifier":"shell:allow-spawn","allow":[{"args":true,"name":"binaries/deep-live-cam-server","sidecar":true}]},"shell:allow-execute","shell:allow-kill","shell:allow-stdin-write","updater:default"]}}
