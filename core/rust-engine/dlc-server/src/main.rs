@@ -104,6 +104,7 @@ async fn main() {
         remote_mode: remote,
         bind_address: addr.to_string(),
         api_token,
+        connected_clients: Arc::new(std::sync::atomic::AtomicU32::new(0)),
     };
 
     let app = build_router(server_state, remote);

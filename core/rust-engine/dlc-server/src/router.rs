@@ -86,6 +86,8 @@ pub struct ServerState {
     pub remote_mode:    bool,
     pub bind_address:   String,
     pub api_token:      Option<String>,
+    /// Number of currently connected WS video clients.
+    pub connected_clients: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl axum::extract::FromRef<ServerState> for Arc<RwLock<AppState>> {
@@ -196,6 +198,7 @@ pub fn test_state() -> ServerState {
         remote_mode:  false,
         bind_address: "127.0.0.1:8008".to_string(),
         api_token:    None,
+        connected_clients: Arc::new(std::sync::atomic::AtomicU32::new(0)),
     }
 }
 
@@ -224,6 +227,7 @@ async fn health(State(server_state): State<ServerState>) -> impl IntoResponse {
         },
         "remote_mode": server_state.remote_mode,
         "bind_address": server_state.bind_address,
+        "connected_clients": server_state.connected_clients.load(std::sync::atomic::Ordering::Relaxed),
     }))
 }
 
@@ -1017,7 +1021,9 @@ fn encode_jpeg(width: u32, height: u32, rgb_pixels: &[u8]) -> anyhow::Result<Vec
 async fn handle_video_ws(mut socket: WebSocket, state: ServerState) {
     use axum::extract::ws::Message;
 
-    tracing::info!("[WS] video client connected");
+    state.connected_clients.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let client_count = state.connected_clients.load(std::sync::atomic::Ordering::Relaxed);
+    tracing::info!("[WS] video client connected ({client_count} total)");
 
     // Dedicated producer thread: reads camera, runs inference, sends JPEG via channel.
     // This avoids spawn_blocking pool exhaustion and ensures sequential camera access.
@@ -1075,7 +1081,9 @@ async fn handle_video_ws(mut socket: WebSocket, state: ServerState) {
 
     drop(frame_rx); // signal producer to stop
     let _ = producer.join();
-    tracing::info!("[WS] video handler exiting");
+    state.connected_clients.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    let remaining = state.connected_clients.load(std::sync::atomic::Ordering::Relaxed);
+    tracing::info!("[WS] video handler exiting ({remaining} clients remain)");
 }
 
 /// Produce one JPEG frame with timing metrics (blocking).
