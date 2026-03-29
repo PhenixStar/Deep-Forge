@@ -209,12 +209,53 @@ fn rgb_nchw_01_to_bgr_hwc(data: &[f32], h: usize, w: usize) -> Frame {
 // Paste-back: inverse-warp 128x128 patch into frame
 // ---------------------------------------------------------------------------
 
+/// Elliptical face mask for the 128x128 patch.
+/// Returns alpha in [0,1] — 1.0 at center, smooth falloff at edges.
+/// Matches InsightFace's blending approach.
+fn face_mask_128() -> Vec<f32> {
+    let size = 128usize;
+    let cx = size as f32 / 2.0;
+    let cy = size as f32 / 2.0;
+    // Ellipse radii — slightly smaller than the patch to feather edges.
+    let rx = size as f32 * 0.42; // horizontal
+    let ry = size as f32 * 0.45; // vertical (taller for face shape)
+    let feather = 0.15; // feather zone as fraction of radius
+
+    let mut mask = vec![0.0f32; size * size];
+    for y in 0..size {
+        for x in 0..size {
+            let dx = (x as f32 - cx) / rx;
+            let dy = (y as f32 - cy) / ry;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let alpha = if dist <= 1.0 - feather {
+                1.0
+            } else if dist <= 1.0 + feather {
+                // Smooth cosine falloff in the feather zone
+                let t = (dist - (1.0 - feather)) / (2.0 * feather);
+                0.5 * (1.0 + (std::f32::consts::PI * t).cos())
+            } else {
+                0.0
+            };
+            mask[y * size + x] = alpha;
+        }
+    }
+    mask
+}
+
+/// Pre-computed face mask (computed once, reused).
+fn get_face_mask() -> &'static [f32] {
+    use std::sync::OnceLock;
+    static MASK: OnceLock<Vec<f32>> = OnceLock::new();
+    MASK.get_or_init(face_mask_128)
+}
+
 /// For each pixel in `frame`, compute where it maps in the 128x128 `swapped`
-/// patch (via the inverse of `fwd_mat`).  Copy bilinear-interpolated patch
-/// colour into the frame wherever the mapping falls inside the patch.
+/// patch (via the inverse of `fwd_mat`).  Alpha-blend using an elliptical
+/// face mask for seamless edges.
 fn paste_back(frame: &mut Frame, swapped: &Frame, fwd_mat: &[f32; 6]) -> Result<()> {
     let (fh, fw) = (frame.shape()[0], frame.shape()[1]);
     let (ph, pw) = (128usize, 128usize);
+    let mask = get_face_mask();
 
     let inv = invert_affine(fwd_mat)?;
     let (ia, ib, itx, ic, id, ity) = (inv[0], inv[1], inv[2], inv[3], inv[4], inv[5]);
@@ -246,6 +287,12 @@ fn paste_back(frame: &mut Frame, swapped: &Frame, fwd_mat: &[f32; 6]) -> Result<
                 continue;
             }
 
+            // Elliptical mask alpha at this patch position.
+            let mx = (px as usize).min(pw - 1);
+            let my = (py as usize).min(ph - 1);
+            let alpha = mask[my * pw + mx];
+            if alpha < 0.001 { continue; }
+
             let x0 = px.floor() as usize;
             let y0 = py.floor() as usize;
             let x1 = (x0 + 1).min(pw - 1);
@@ -258,11 +305,14 @@ fn paste_back(frame: &mut Frame, swapped: &Frame, fwd_mat: &[f32; 6]) -> Result<
                 let p01 = swapped[[y0, x1, c]] as f32;
                 let p10 = swapped[[y1, x0, c]] as f32;
                 let p11 = swapped[[y1, x1, c]] as f32;
-                let val = p00 * (1.0 - wx) * (1.0 - wy)
+                let swapped_val = p00 * (1.0 - wx) * (1.0 - wy)
                     + p01 * wx * (1.0 - wy)
                     + p10 * (1.0 - wx) * wy
                     + p11 * wx * wy;
-                frame[[fy, fx, c]] = val.clamp(0.0, 255.0) as u8;
+                // Alpha-blend: result = swapped * alpha + original * (1 - alpha)
+                let orig = frame[[fy, fx, c]] as f32;
+                frame[[fy, fx, c]] = (swapped_val * alpha + orig * (1.0 - alpha))
+                    .clamp(0.0, 255.0) as u8;
             }
         }
     }
