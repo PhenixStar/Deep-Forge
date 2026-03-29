@@ -231,35 +231,8 @@ async fn models_status(
     State(server_state): State<ServerState>,
 ) -> impl IntoResponse {
     let app = server_state.app.read().unwrap();
-    let models_dir = &app.models_dir;
-
-    let model_defs = [
-        ("SCRFD (Face Detection)", "buffalo_l/buffalo_l/det_10g.onnx", true),
-        ("ArcFace (Recognition)", "buffalo_l/buffalo_l/w600k_r50.onnx", true),
-        ("inswapper (Face Swap)", "inswapper_128.onnx", true),
-        ("GFPGAN (Enhancer)", "gfpgan-1024.onnx", false),
-        ("GPEN-256", "GPEN-BFR-256.onnx", false),
-        ("GPEN-512", "GPEN-BFR-512.onnx", false),
-    ];
-
-    let models: Vec<serde_json::Value> = model_defs.iter().map(|(name, file, required)| {
-        let path = models_dir.join(file);
-        let file_exists = path.exists();
-        let size_mb = if file_exists {
-            std::fs::metadata(&path).ok().map(|m| m.len() as f64 / 1_048_576.0)
-        } else {
-            None
-        };
-        serde_json::json!({
-            "name": name,
-            "file": file,
-            "file_exists": file_exists,
-            "size_mb": size_mb,
-            "required": required,
-        })
-    }).collect();
-
-    Json(serde_json::json!({"models": models}))
+    let statuses = crate::model_manifest::check_models(&app.models_dir);
+    Json(serde_json::json!({"models": statuses}))
 }
 
 async fn reload_models(State(state): State<ServerState>) -> impl IntoResponse {
