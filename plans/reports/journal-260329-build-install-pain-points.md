@@ -200,3 +200,47 @@ cargo build --release -p dlc-server --features dlc-capture/opencv
 
 ### No Admin Required
 App installs to `%LOCALAPPDATA%\Deep Live Cam\` — fully user-scoped, no UAC prompt needed.
+
+---
+
+## Pain Point 8: SCRFD Score Sigmoid Confusion
+
+**Symptom 1:** Face detection returned 0 faces. Max score was 0.47, threshold 0.5.
+
+**Initial hypothesis:** Scores are raw logits needing sigmoid. Applied `1/(1+exp(-x))`.
+
+**Symptom 2:** After sigmoid, 8000+ "faces" detected per frame. All low-confidence anchors mapped above 0.5 by sigmoid.
+
+**Root Cause:** The InsightFace SCRFD `det_10g.onnx` from buffalo_l **already has Sigmoid as the final layer** in its score branch. Scores ARE probabilities. The original max of 0.47 was a real probability — just below the 0.5 threshold for a borderline detection.
+
+**Fix:** Revert sigmoid, lower threshold from 0.5 to 0.3. Now correctly detects 1 face per frame.
+
+**Lesson:** Always inspect the ONNX model graph to check if activation functions are included before adding them manually. Use `python -c "import onnx; m = onnx.load('det_10g.onnx'); print([n.op_type for n in m.graph.node[-5:]])"` to verify.
+
+---
+
+## Pain Point 9: tokio::sync::RwLock from spawn_blocking Thread
+
+**Symptom:** WS video handler connected but sent zero frames. No errors logged.
+
+**Root Cause:** `produce_frame()` ran inside `tokio::task::spawn_blocking()` but called `state.app.try_read().ok()?` on a `tokio::sync::RwLock`. Tokio locks cannot be acquired from non-async contexts — `try_read()` always returns `Err`. The `?` operator propagated `None`, causing every frame to be silently skipped (`Ok(None) => continue`).
+
+**Fix:** Replace `try_read().ok()?` with `blocking_read()` — the tokio RwLock method specifically designed for blocking threads.
+
+**Lesson for v1.0:** When mixing async and blocking code:
+- `tokio::sync::Mutex/RwLock` — use `.blocking_lock()`/`.blocking_read()` from spawn_blocking
+- `std::sync::Mutex/RwLock` — works everywhere but can't be held across `.await`
+- Never use `try_lock().ok()?` as a shortcut — it silently drops frames
+
+---
+
+## Updated Commit History
+
+| Commit | Changes |
+|--------|---------|
+| `b03dbca` | 7 code review fixes (backend, frontend, Tauri config) |
+| `6f8334d` | OpenCV 0.98 upgrade + camera probe fixes |
+| `031a4c3` | Build/install pain points journal |
+| `1f77d02` | Sigmoid activation (incorrect — reverted in next commit) |
+| `030da1a` | Revert sigmoid, lower threshold to 0.3 |
+| `3ef41cb` | blocking_read() fix for tokio RwLock in spawn_blocking |
