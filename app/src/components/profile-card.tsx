@@ -4,11 +4,12 @@ interface ProfileCardProps {
   profile: Profile;
   onSelect: (id: string) => void;
   onEdit: (id: string) => void;
+  onDelete?: (id: string) => void;
 }
 
 const MAX_PHOTOS = 6;
 
-export function ProfileCard({ profile, onSelect, onEdit }: ProfileCardProps) {
+export function ProfileCard({ profile, onSelect, onEdit, onDelete }: ProfileCardProps) {
   const scorePercent = Math.round(profile.score * 100);
   const thumbnailSrc = profile.thumbnail_b64
     ? `data:image/jpeg;base64,${profile.thumbnail_b64}`
@@ -66,6 +67,15 @@ export function ProfileCard({ profile, onSelect, onEdit }: ProfileCardProps) {
         >
           Edit
         </button>
+        {onDelete && (
+          <button
+            className="btn-delete"
+            onClick={() => onDelete(profile.id)}
+            title="Delete profile"
+          >
+            Del
+          </button>
+        )}
       </div>
     </div>
   );

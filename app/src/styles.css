@@ -1179,3 +1179,7 @@ main {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.3; }
 }
+
+/* Profile card delete button */
+.btn-delete { background: var(--danger); color: white; border: none; padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; }
+.btn-delete:hover { opacity: 0.8; }

@@ -299,16 +299,10 @@ export default function App() {
 
       <ProfileCatalog
         isOpen={showCatalog}
-        onClose={() => setShowCatalog(false)}
+        onClose={() => { setShowCatalog(false); refreshProfiles(); }}
         onSelect={(id) => { handleProfileSelect(id); setShowCatalog(false); }}
         onCreateNew={() => {
-          fetch(`${API_BASE}/profiles`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: "New Profile", description: "" }),
-          })
-            .then(() => refreshProfiles())
-            .catch(() => {});
+          // ProfileCatalog handles create internally via ProfileEditor
         }}
       />
     </div>
