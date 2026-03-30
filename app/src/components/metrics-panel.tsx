@@ -8,6 +8,23 @@ interface MetricsPanelProps {
   sourceScore: number | null;
 }
 
+function gpuProviderVariant(provider: string): "directml" | "npu" | "cpu" | "auto" {
+  const lower = provider.toLowerCase();
+  if (lower.includes("directml")) return "directml";
+  if (lower.includes("npu") || lower.includes("vitisai")) return "npu";
+  if (lower === "cpu") return "cpu";
+  return "auto";
+}
+
+function GpuProviderBadge({ provider }: { provider: string }) {
+  const variant = gpuProviderVariant(provider);
+  return (
+    <span className={`provider-badge provider-badge--${variant}`}>
+      {provider}
+    </span>
+  );
+}
+
 function MetricRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="metric-row">
@@ -76,7 +93,14 @@ export function MetricsPanel({
               : na
           }
         />
-        <MetricRow label="GPU" value={gpuProvider || na} />
+        <div className="metric-row">
+          <span className="metric-label">GPU</span>
+          {gpuProvider ? (
+            <GpuProviderBadge provider={gpuProvider} />
+          ) : (
+            <span className="metric-value">{na}</span>
+          )}
+        </div>
       </MetricSection>
 
       <MetricSection title="SOURCE">

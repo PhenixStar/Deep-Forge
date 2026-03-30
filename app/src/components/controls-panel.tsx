@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type ChangeEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { Status, Camera, Enhancers, Resolution, SwapCalibration, Profile, InputMode } from "../types";
+import type { Status, Camera, Enhancers, Resolution, SwapCalibration, Profile, InputMode, ProviderInfo, ProvidersResponse } from "../types";
 import { SourceSelector } from "./source-selector";
 
 const API_BASE = "http://localhost:8008";
@@ -83,6 +83,12 @@ export function ControlsPanel({
   const [cameraReady, setCameraReady] = useState(false);
   const cameraPollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // GPU Provider
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [activeProvider, setActiveProvider] = useState<string>("");
+  const [selectedProvider, setSelectedProvider] = useState<string>("Auto");
+  const [providerReloading, setProviderReloading] = useState(false);
+
   // Server mode toggle (restart sidecar)
   const [restarting, setRestarting] = useState(false);
 
@@ -139,6 +145,22 @@ export function ControlsPanel({
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
     };
   }, [recording]);
+
+  // Fetch available providers on mount
+  useEffect(() => {
+    fetch(`${API_BASE}/providers`)
+      .then((res) => res.json())
+      .then((data: ProvidersResponse) => {
+        setProviders(data.available);
+        setActiveProvider(data.active);
+        // Pre-select the currently active provider in the UI
+        const match = data.available.find(
+          (p) => p.name === data.active || p.name.startsWith(data.active.split(" ")[0])
+        );
+        if (match) setSelectedProvider(match.name);
+      })
+      .catch(() => {});
+  }, []);
 
   // Fetch server mode info from /health on mount
   useEffect(() => {
@@ -256,6 +278,33 @@ export function ControlsPanel({
       } catch {
         // Best-effort
       }
+    }
+  };
+
+  const handleProviderChange = async (providerName: string) => {
+    if (providerName === selectedProvider) return;
+    setSelectedProvider(providerName);
+    setProviderReloading(true);
+    try {
+      // Map display name to API value
+      const apiName = providerName === "VitisAI NPU" ? "NPU" : providerName;
+      await fetch(`${API_BASE}/providers/switch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: apiName }),
+      });
+      // Reload models with new provider
+      await fetch(`${API_BASE}/models/reload`, { method: "POST" });
+      // Refresh active provider display
+      const res = await fetch(`${API_BASE}/providers`);
+      if (res.ok) {
+        const data = (await res.json()) as ProvidersResponse;
+        setActiveProvider(data.active);
+      }
+    } catch {
+      // Best-effort; selection stays updated locally
+    } finally {
+      setProviderReloading(false);
     }
   };
 
@@ -386,6 +435,41 @@ export function ControlsPanel({
           </label>
         ))}
       </div>
+
+      {providers.length > 0 && (
+        <div className="gpu-provider">
+          <label>
+            GPU Provider
+            {providerReloading && (
+              <span className="provider-reloading">Restarting models...</span>
+            )}
+          </label>
+          <div className="provider-list">
+            {providers.map((p) => (
+              <label
+                key={p.name}
+                className={`provider-option${!p.available ? " disabled" : ""}${selectedProvider === p.name ? " selected" : ""}`}
+                title={!p.available ? `Unavailable: ${p.description}` : p.description}
+              >
+                <input
+                  type="radio"
+                  name="gpu-provider"
+                  value={p.name}
+                  checked={selectedProvider === p.name}
+                  disabled={!p.available || providerReloading}
+                  onChange={() => handleProviderChange(p.name)}
+                />
+                <span className="provider-name">{p.name}</span>
+                {activeProvider && p.name === providers.find(
+                  (x) => x.name === activeProvider || activeProvider.startsWith(x.name.split(" ")[0])
+                )?.name && (
+                  <span className="provider-active-badge">active</span>
+                )}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="debug-toggle-row">
         <label className="toggle">

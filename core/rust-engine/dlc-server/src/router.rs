@@ -151,6 +151,8 @@ pub fn build_router(server_state: ServerState, remote: bool) -> Router {
         .route("/camera/status",    get(camera_status))
         .route("/recording/start",  post(recording_start))
         .route("/recording/stop",   post(recording_stop))
+        .route("/providers",         get(list_providers))
+        .route("/providers/switch",  post(switch_provider))
         .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024))
         .layer(cors);
 
@@ -273,8 +275,11 @@ async fn models_status(
 }
 
 async fn reload_models(State(state): State<ServerState>) -> impl IntoResponse {
-    let models_dir = state.app.read().unwrap().models_dir.clone();
-    let provider = GpuProvider::Auto;
+    let (models_dir, selected_provider_str) = {
+        let app = state.app.read().unwrap();
+        (app.models_dir.clone(), app.selected_provider.clone())
+    };
+    let provider = provider_from_str(&selected_provider_str);
     let mut results = serde_json::Map::new();
 
     // Detector
@@ -1462,4 +1467,117 @@ fn try_swap_frame_sync(
     };
 
     Some((output, face_rects, swap_bbox, detect_ms, swap_ms))
+}
+
+// ---------------------------------------------------------------------------
+// Provider detection helpers
+// ---------------------------------------------------------------------------
+
+/// Map a `selected_provider` string back to a `GpuProvider`.
+fn provider_from_str(s: &str) -> GpuProvider {
+    match s {
+        "DirectML" => GpuProvider::DirectML { device_id: 0 },
+        "NPU" => GpuProvider::Npu {
+            config_file: std::env::var("DEEP_FORGE_NPU_CONFIG")
+                .unwrap_or_else(|_| "vaip_config.json".into()),
+            cache_dir: std::env::var("DEEP_FORGE_NPU_CACHE")
+                .unwrap_or_else(|_| "./npu_cache".into()),
+        },
+        "CPU" => GpuProvider::Cpu,
+        _ => GpuProvider::detect(), // "Auto" or unknown
+    }
+}
+
+/// Detect whether the VitisAI NPU EP is likely available.
+/// Checks for `vaip_config.json` next to the server executable.
+fn npu_available() -> bool {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let config_path = exe_dir.join("vaip_config.json");
+    config_path.exists()
+}
+
+// ---------------------------------------------------------------------------
+// GET /providers
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+struct ProviderInfo {
+    name: String,
+    available: bool,
+    description: String,
+}
+
+#[derive(serde::Serialize)]
+struct ProvidersResponse {
+    active: String,
+    available: Vec<ProviderInfo>,
+}
+
+async fn list_providers(State(state): State<ServerState>) -> impl IntoResponse {
+    // Determine what is actually running (gpu_provider set at startup).
+    let active = state.gpu_provider.clone();
+
+    let providers = vec![
+        ProviderInfo {
+            name: "DirectML".to_string(),
+            available: true, // always available on Windows via ort
+            description: "AMD/Intel/NVIDIA GPU via DirectML".to_string(),
+        },
+        ProviderInfo {
+            name: "VitisAI NPU".to_string(),
+            available: npu_available(),
+            description: "AMD XDNA2 NPU (Ryzen AI)".to_string(),
+        },
+        ProviderInfo {
+            name: "CPU".to_string(),
+            available: true,
+            description: "CPU fallback (always available)".to_string(),
+        },
+    ];
+
+    Json(ProvidersResponse {
+        active,
+        available: providers,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// POST /providers/switch
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SwitchProviderRequest {
+    provider: String,
+}
+
+async fn switch_provider(
+    State(state): State<ServerState>,
+    Json(body): Json<SwitchProviderRequest>,
+) -> impl IntoResponse {
+    let valid = ["Auto", "DirectML", "NPU", "CPU"];
+    if !valid.contains(&body.provider.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!(
+                    "unknown provider '{}'; valid values: Auto, DirectML, NPU, CPU",
+                    body.provider
+                )
+            })),
+        )
+            .into_response();
+    }
+
+    state.app.write().unwrap().selected_provider = body.provider.clone();
+    tracing::info!("[PROVIDERS] selected_provider updated to '{}'", body.provider);
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "selected": body.provider,
+        "message": "Provider stored. Call POST /models/reload to apply.",
+    }))
+    .into_response()
 }

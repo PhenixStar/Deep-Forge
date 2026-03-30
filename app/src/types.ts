@@ -75,3 +75,14 @@ export interface InputStatus {
   input_mode: InputMode;
   filename?: string;
 }
+
+export interface ProviderInfo {
+  name: string;
+  available: boolean;
+  description: string;
+}
+
+export interface ProvidersResponse {
+  active: string;
+  available: ProviderInfo[];
+}

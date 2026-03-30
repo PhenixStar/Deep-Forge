@@ -50,6 +50,9 @@ pub struct AppState {
     pub recording: bool,
     /// Output path for the current (or last) recording.
     pub recording_path: Option<std::path::PathBuf>,
+    /// User-selected execution provider. Applied on next model reload.
+    /// Values: "Auto", "DirectML", "NPU", "CPU"
+    pub selected_provider: String,
 }
 
 impl Default for AppState {
@@ -79,6 +82,7 @@ impl Default for AppState {
             video_path: None,
             recording: false,
             recording_path: None,
+            selected_provider: "Auto".to_string(),
         }
     }
 }
