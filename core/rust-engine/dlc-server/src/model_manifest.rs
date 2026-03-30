@@ -78,6 +78,25 @@ pub const MODELS: &[ModelInfo] = &[
         required: false,
         description: "FP16 variant — 2x faster on GPU, auto-selected when present",
     },
+    // === Optional: INT8 quantized for NPU ===
+    ModelInfo {
+        name: "SCRFD INT8 (NPU)",
+        path: "buffalo_l/buffalo_l/det_10g_int8.onnx",
+        url_suffix: "buffalo_l/buffalo_l/det_10g_int8.onnx",
+        fallback_url: "",
+        size_mb: 4,
+        required: false,
+        description: "INT8 QDQ quantized SCRFD — auto-selected when using NPU provider",
+    },
+    ModelInfo {
+        name: "ArcFace INT8 (NPU)",
+        path: "buffalo_l/buffalo_l/w600k_r50_int8.onnx",
+        url_suffix: "buffalo_l/buffalo_l/w600k_r50_int8.onnx",
+        fallback_url: "",
+        size_mb: 44,
+        required: false,
+        description: "INT8 QDQ quantized ArcFace — auto-selected when using NPU provider",
+    },
     // === Optional: face enhancement ===
     ModelInfo {
         name: "GFPGAN 1024",
