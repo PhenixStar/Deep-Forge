@@ -99,6 +99,12 @@ async fn restart_sidecar(app: tauri::AppHandle, remote: bool) -> Result<(), Stri
         cmd.arg("--remote");
     }
 
+    // Prepend exe dir to PATH for DirectML DLL loading.
+    if let Some(exe_dir) = server_exe.parent() {
+        let current_path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{};{}", exe_dir.display(), current_path));
+    }
+
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -147,6 +153,13 @@ fn main() {
 
             let mut cmd = Command::new(&server_exe);
             cmd.args(["--models-dir", &models_dir.to_string_lossy()]);
+
+            // Prepend the server exe's directory to PATH so our DirectML
+            // onnxruntime.dll loads before C:\Windows\System32's CPU-only one.
+            if let Some(exe_dir) = server_exe.parent() {
+                let current_path = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{};{}", exe_dir.display(), current_path));
+            }
 
             // Hide the console window on Windows (no visible PowerShell/cmd).
             #[cfg(target_os = "windows")]
