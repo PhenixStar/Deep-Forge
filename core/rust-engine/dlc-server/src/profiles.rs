@@ -225,7 +225,7 @@ fn extract_all_embeddings(
             Ok(f) => f,
             Err(_) => continue,
         };
-        let faces = match detector.detect(&frame, 0.5) {
+        let faces = match detector.detect(&frame, 0.3) {
             Ok(f) => f,
             Err(_) => continue,
         };
@@ -299,7 +299,7 @@ fn recompute_profile(dir: &Path, meta: &mut ProfileMeta, state: &ServerState) ->
             if let Ok(frame) = decode_to_bgr_frame(&bytes) {
                 let mut det_guard = state.models.detector.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
                 if let Some(detector) = det_guard.as_mut() {
-                    if let Ok(faces) = detector.detect(&frame, 0.5) {
+                    if let Ok(faces) = detector.detect(&frame, 0.3) {
                         if let Some(face) = faces.first() {
                             if let Ok(thumb_bytes) = make_thumbnail(&frame, &face.bbox) {
                                 let _ = std::fs::write(dir.join("thumbnail.jpg"), thumb_bytes);
@@ -551,7 +551,7 @@ pub async fn add_photo(
         };
         let mut det_guard = state.models.detector.lock().unwrap();
         if let Some(detector) = det_guard.as_mut() {
-            match detector.detect(&frame, 0.5) {
+            match detector.detect(&frame, 0.3) {
                 Ok(faces) if faces.is_empty() => {
                     return err_json(StatusCode::UNPROCESSABLE_ENTITY, "no face detected in photo");
                 }

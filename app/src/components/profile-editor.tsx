@@ -61,7 +61,7 @@ export function ProfileEditor({ profileId, onSave, onCancel }: ProfileEditorProp
         );
         // Pad photos array to MAX_SLOTS with nulls
         const slots: (PhotoSlot | null)[] = Array(MAX_SLOTS).fill(null);
-        data.photos.forEach((p, i) => {
+        (data.photos ?? []).forEach((p: PhotoSlot, i: number) => {
           if (i < MAX_SLOTS) slots[i] = p;
         });
         setPhotos(slots);
@@ -123,7 +123,7 @@ export function ProfileEditor({ profileId, onSave, onCancel }: ProfileEditorProp
 
         // Server returns updated photo list; map back into slots
         const slots: (PhotoSlot | null)[] = Array(MAX_SLOTS).fill(null);
-        data.photos.forEach((p, i) => {
+        (data.photos ?? []).forEach((p: PhotoSlot, i: number) => {
           if (i < MAX_SLOTS) slots[i] = p;
         });
         setPhotos(slots);
@@ -158,7 +158,7 @@ export function ProfileEditor({ profileId, onSave, onCancel }: ProfileEditorProp
           thumbnail_b64: string | null;
         };
         const slots: (PhotoSlot | null)[] = Array(MAX_SLOTS).fill(null);
-        data.photos.forEach((p, i) => {
+        (data.photos ?? []).forEach((p: PhotoSlot, i: number) => {
           if (i < MAX_SLOTS) slots[i] = p;
         });
         setPhotos(slots);
