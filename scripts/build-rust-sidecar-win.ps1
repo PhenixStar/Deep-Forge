@@ -22,6 +22,18 @@ Push-Location "$RepoRoot\core\rust-engine"
 # Point ORT at the DirectML DLLs (not the download-binaries CPU ones).
 $env:ORT_LIB_PATH = $OrtLibsDir
 
+# Point opencv-rust at vcpkg-installed OpenCV (cmake probe needs MSVC toolchain).
+$VcpkgInstalled = "$env:VCPKG_ROOT\installed\x64-windows"
+if (-not $env:VCPKG_ROOT) {
+    $VcpkgInstalled = (Get-Command vcpkg -ErrorAction SilentlyContinue | Split-Path -Parent | Split-Path) + "\installed\x64-windows"
+}
+if (Test-Path "$VcpkgInstalled\include\opencv4\opencv2\core.hpp") {
+    $env:OPENCV_INCLUDE_PATHS = "$VcpkgInstalled\include\opencv4"
+    $env:OPENCV_LINK_PATHS = "$VcpkgInstalled\lib"
+    $env:OPENCV_LINK_LIBS = "opencv_core4,opencv_imgcodecs4,opencv_imgproc4,opencv_videoio4,opencv_highgui4"
+    Write-Host "[BUILD] OpenCV found via vcpkg: $VcpkgInstalled"
+}
+
 # Override ort features: remove download-binaries, add directml.
 # This is done via RUSTFLAGS cfg, but the simplest approach is to
 # temporarily patch Cargo.toml (restored after build).

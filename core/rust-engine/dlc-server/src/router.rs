@@ -1571,8 +1571,17 @@ struct ProvidersResponse {
 }
 
 async fn list_providers(State(state): State<ServerState>) -> impl IntoResponse {
-    // Determine what is actually running (gpu_provider set at startup).
-    let active = state.gpu_provider.clone();
+    // Show the currently selected provider (updated by /providers/switch + /models/reload).
+    let selected = state.app.read().unwrap().selected_provider.clone();
+    let active = if selected.is_empty() || selected == "Auto" {
+        state.gpu_provider.clone()
+    } else {
+        // Map stored API name back to display name
+        match selected.as_str() {
+            "NPU" => "VitisAI NPU".to_string(),
+            other => other.to_string(),
+        }
+    };
 
     let providers = vec![
         ProviderInfo {
